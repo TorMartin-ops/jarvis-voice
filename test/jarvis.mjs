@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 const { SentenceSplitter } = await import("../dist/split.js");
 const { summarize } = await import("../dist/worker.js");
+const { parseReply } = await import("../dist/brain-cli.js");
 
 let passed = 0;
 const t = (name, fn) => { fn(); passed++; console.log("ok  " + name); };
@@ -32,6 +33,15 @@ t("summary keeps the first sentences and marks failure", () => {
 t("long output is capped", () => {
   const long = "Ord er fint. ".repeat(200);
   assert.ok(summarize(long, 0).length <= 510);
+});
+
+t("CLI brain splits speech from delegation lines", () => {
+  const r = parseReply("Skal bli, jeg setter i gang.\nDELEGATE: Finn alle TODO i repoet og oppsummer.\n\n**Ferdig** snart.");
+  assert.deepEqual(r.speech, ["Skal bli, jeg setter i gang.", "Ferdig snart."]);
+  assert.deepEqual(r.delegations, ["Finn alle TODO i repoet og oppsummer."]);
+});
+t("CLI brain ignores an empty delegation", () => {
+  assert.deepEqual(parseReply("DELEGATE:   \nHei").delegations, []);
 });
 
 console.log(`\n${passed} jarvis tests passed`);

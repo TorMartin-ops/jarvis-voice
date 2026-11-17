@@ -14,7 +14,7 @@ Speech-to-text and text-to-speech use ElevenLabs. Discord audio uses discord.js 
 
 ## Setup
 
-Requirements: Node.js 20+, a Discord bot in a server with voice enabled, an ElevenLabs key, an Anthropic API key with credits, and Claude Code installed and logged in on the PC.
+Requirements: Node.js 20+, a Discord bot in a server with voice enabled, an ElevenLabs key, and Claude Code installed and logged in on the PC. An Anthropic API key is optional: with it the brain streams from the API (faster); without it each turn runs Claude Code on the PC.
 
 ```bash
 npm install

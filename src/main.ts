@@ -4,6 +4,7 @@ import { join } from "path";
 import { Client, Events, GatewayIntentBits, type VoiceBasedChannel } from "discord.js";
 import { VoicePipeline, type VoicePipelineConfig } from "./voice-pipeline.js";
 import { Brain } from "./brain.js";
+import { CliBrain } from "./brain-cli.js";
 import { SentenceSplitter } from "./split.js";
 import { startWorker, type WorkerResult } from "./worker.js";
 
@@ -37,7 +38,6 @@ function fail(msg: string): never {
 }
 if (!DISCORD_TOKEN) fail("DISCORD_BOT_TOKEN is missing (set it in the Discord plugin .env or here).");
 if (!ELEVEN_KEY) fail("ELEVENLABS_API_KEY is missing.");
-if (!ANTHROPIC_KEY) fail("ANTHROPIC_API_KEY is missing in .env.");
 if (!GUILD_ID || !CHANNEL_ID) fail("JARVIS_GUILD_ID and JARVIS_CHANNEL_ID must be set.");
 
 const num = (v: string | undefined): number | undefined => {
@@ -62,7 +62,9 @@ const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates, GatewayIntentBits.GuildMembers],
 });
 const pipeline = new VoicePipeline(client, config);
-const brain = new Brain(ANTHROPIC_KEY!);
+// With an API key the fast streaming brain is used. Without one, each turn runs Claude Code on this PC.
+const brain: Brain | CliBrain = ANTHROPIC_KEY ? new Brain(ANTHROPIC_KEY) : new CliBrain();
+console.error(`jarvis-voice: brain = ${ANTHROPIC_KEY ? 'api' : 'claude-code (no API key)'}`);
 
 let current: AbortController | null = null;
 /** Brain turns run one at a time, in arrival order. */

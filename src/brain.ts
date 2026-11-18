@@ -119,6 +119,11 @@ export interface BrainOptions {
   /** Extra system text added each turn (long-term memory). */
   context: () => string;
   runTool: (name: string, args: Record<string, unknown>) => Promise<string> | string;
+  /**
+   * Called after each round of tool calls with their results and everything said so far this turn.
+   * `say` is spoken at once; `stop` ends the turn without another model step.
+   */
+  afterTools?: (outcomes: { name: string; result: string }[], spoken: string) => { say?: string; stop: boolean };
 }
 
 export class Brain {
@@ -142,8 +147,10 @@ export class Brain {
     const extra = this.opts.context();
     const system = extra ? `${SYSTEM_PROMPT}\n\n${extra}` : SYSTEM_PROMPT;
 
+    let spoken = "";
     for (let step = 0; step < MAX_STEPS; step++) {
       const { text, toolCalls, finish } = await this.streamStep(system, hooks, signal);
+      spoken += text;
       debugLog(`LLM step ${step}: finish=${finish} tools=${toolCalls.map((c) => c.name).join(",") || "-"} chars=${text.length}`);
       if (finish !== "tool_calls" || toolCalls.length === 0) {
         this.history.push({ role: "assistant", content: text });
@@ -157,10 +164,24 @@ export class Brain {
       });
       // End the spoken sentence here, so text from the next step never runs into it.
       if (text) hooks.onText("\n");
+      const outcomes: { name: string; result: string }[] = [];
       for (const c of toolCalls) {
         if (signal?.aborted) throw new DOMException("aborted", "AbortError");
         hooks.onToolStart?.(c.name);
-        this.history.push({ role: "tool", tool_call_id: c.id, content: await this.runOne(c) });
+        const result = await this.runOne(c);
+        outcomes.push({ name: c.name, result });
+        this.history.push({ role: "tool", tool_call_id: c.id, content: result });
+      }
+      const next = this.opts.afterTools?.(outcomes, spoken);
+      if (next?.say) {
+        hooks.onText(next.say + "\n");
+        spoken += next.say;
+        this.history.push({ role: "assistant", content: next.say });
+      }
+      if (next?.stop) {
+        debugLog(`LLM turn ended after tools (${outcomes.map((o) => o.name).join(",")})`);
+        this.trim();
+        return;
       }
     }
     this.history.push({ role: "assistant", content: "" });

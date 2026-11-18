@@ -1,5 +1,3 @@
-import { Transform, TransformCallback } from "stream";
-import OpusScript from "opusscript";
 import { readFileSync } from "fs";
 import { resolve, dirname } from "path";
 import { createRequire } from "module";
@@ -13,8 +11,6 @@ const MIN_SPEECH_RATIO = 0.2; // below this share of speech frames an utterance 
 const RMS_FALLBACK_THRESHOLD = 700;
 const DIGITAL_SILENCE_RMS = 20; // Lowered from 50 — avoid filtering quiet speakers
 
-const DISCORD_SAMPLE_RATE = 48000;
-const DISCORD_CHANNELS = 2;
 const STT_SAMPLE_RATE = 16000;
 const BYTES_PER_SAMPLE = 2; // 16-bit audio
 
@@ -26,161 +22,6 @@ export const VAD_FRAME_MS = (VAD_FRAME_SAMPLES / STT_SAMPLE_RATE) * 1000; // 32
 
 // Speech probability threshold — Silero v5 default is 0.5
 const DEFAULT_SPEECH_THRESHOLD = 0.5;
-
-// Opus packet validation constants
-const OPUS_MIN_PACKET_SIZE = 1; // 1 byte = valid silence/DTX packet
-const OPUS_MAX_PACKET_SIZE = 5760; // max Opus frame size in bytes
-
-/**
- * Opus decoder using opusscript (pure JS/WASM) instead of the native
- * @discordjs/opus C binding.
- *
- * Why: @discordjs/opus 0.9.0 crashes with SIGSEGV on Node.js v24 (ABI v137)
- * when decoding real Discord audio packets. The native prebuild for
- * darwin-arm64 has a memory corruption bug that cannot be caught by
- * try-catch or uncaughtException handlers. opusscript uses Emscripten/WASM
- * which is immune to SIGSEGV — decode errors throw normal JS exceptions.
- *
- * Performance: opusscript is ~2-5x slower than native, but Opus decoding
- * is not the bottleneck (the network round trips are). At typical voice
- * rates (50 packets/sec), the CPU cost is negligible.
- */
-class SafeOpusDecoder extends Transform {
-  private decoder: InstanceType<typeof OpusScript>;
-  private droppedPackets = 0;
-  private decoderErrors = 0;
-
-  constructor() {
-    super();
-    this.decoder = new OpusScript(
-      DISCORD_SAMPLE_RATE,
-      DISCORD_CHANNELS,
-      OpusScript.Application.AUDIO,
-    );
-  }
-
-  _transform(chunk: Buffer, _encoding: string, callback: TransformCallback): void {
-    if (!chunk || chunk.length < OPUS_MIN_PACKET_SIZE || chunk.length > OPUS_MAX_PACKET_SIZE) {
-      this.droppedPackets++;
-      if (this.droppedPackets <= 5 || this.droppedPackets % 100 === 0) {
-        console.error(
-          `[opus-decoder] dropped invalid packet ` +
-            `(${chunk?.length ?? 0} bytes, total dropped: ${this.droppedPackets})`,
-        );
-      }
-      callback();
-      return;
-    }
-
-    try {
-      const pcm = this.decoder.decode(chunk);
-      // opusscript returns a Buffer with interleaved 16-bit PCM samples
-      this.push(Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength));
-      callback();
-    } catch (err) {
-      this.decoderErrors++;
-      if (this.decoderErrors <= 10 || this.decoderErrors % 100 === 0) {
-        console.error(
-          `[opus-decoder] decode error #${this.decoderErrors}: ` +
-            `${err instanceof Error ? err.message : err}`,
-        );
-      }
-      // Skip the packet and continue — don't crash the pipeline
-      callback();
-    }
-  }
-
-  _flush(callback: TransformCallback): void {
-    callback();
-  }
-
-  _destroy(err: Error | null, callback: (error: Error | null) => void): void {
-    try {
-      this.decoder.delete();
-    } catch {
-      // Already deleted
-    }
-    callback(err);
-  }
-}
-
-export function createOpusDecoder(): Transform {
-  return new SafeOpusDecoder();
-}
-
-/** Windowed-sinc (Blackman) low-pass FIR with unity DC gain. `cutoff` is a fraction of the sample rate. */
-export function designLowpass(taps: number, cutoff: number): Float64Array {
-  const h = new Float64Array(taps);
-  const m = taps - 1;
-  let sum = 0;
-  for (let n = 0; n < taps; n++) {
-    const x = n - m / 2;
-    const sinc = x === 0 ? 2 * cutoff : Math.sin(2 * Math.PI * cutoff * x) / (Math.PI * x);
-    const window = 0.42 - 0.5 * Math.cos((2 * Math.PI * n) / m) + 0.08 * Math.cos((4 * Math.PI * n) / m);
-    h[n] = sinc * window;
-    sum += h[n];
-  }
-  for (let n = 0; n < taps; n++) h[n] /= sum;
-  return h;
-}
-
-// 95 taps, 7 kHz cutoff at 48 kHz: flat speech band, strong rejection above
-// the 8 kHz Nyquist limit of the 16 kHz output. About 1 ms of delay.
-const DOWNSAMPLE_FIR = designLowpass(95, 7000 / DISCORD_SAMPLE_RATE);
-
-/**
- * Downsample 48 kHz stereo to 16 kHz mono through a proper anti-aliasing
- * low-pass filter, computing only every third output sample.
- *
- * The earlier 3-sample box filter let most of the 8-16 kHz band (sibilants,
- * keyboard clicks, noise) fold back into the speech band, which hurt
- * transcription.
- */
-export function createDownsampler(): Transform {
-  const ratio = DISCORD_SAMPLE_RATE / STT_SAMPLE_RATE; // 3
-  const inputFrameBytes = DISCORD_CHANNELS * BYTES_PER_SAMPLE; // 4 bytes per stereo sample
-  const fir = DOWNSAMPLE_FIR;
-  const historyLength = fir.length - 1;
-  let history = new Float64Array(historyLength); // last mono samples of the previous chunk
-  let next = historyLength; // index (in history + chunk) of the next output sample
-  let residual = Buffer.alloc(0);
-
-  return new Transform({
-    transform(chunk: Buffer, _encoding: string, callback: TransformCallback) {
-      const input = residual.length > 0 ? Buffer.concat([residual, chunk]) : chunk;
-      const frames = Math.floor(input.length / inputFrameBytes);
-      residual = Buffer.from(input.subarray(frames * inputFrameBytes));
-
-      const mono = new Float64Array(historyLength + frames);
-      mono.set(history);
-      for (let i = 0; i < frames; i++) {
-        const offset = i * inputFrameBytes;
-        mono[historyLength + i] = (input.readInt16LE(offset) + input.readInt16LE(offset + BYTES_PER_SAMPLE)) / 2;
-      }
-
-      const outputSamples = next < mono.length ? Math.ceil((mono.length - next) / ratio) : 0;
-      const output = Buffer.alloc(outputSamples * BYTES_PER_SAMPLE);
-      for (let k = 0; k < outputSamples; k++, next += ratio) {
-        let acc = 0;
-        for (let j = 0; j < fir.length; j++) acc += fir[j] * mono[next - j];
-        output.writeInt16LE(Math.max(-32768, Math.min(32767, Math.round(acc))), k * BYTES_PER_SAMPLE);
-      }
-
-      history = mono.slice(mono.length - historyLength);
-      next -= frames;
-      if (output.length === 0) {
-        callback();
-        return;
-      }
-      callback(null, output);
-    },
-
-    flush(callback: TransformCallback) {
-      residual = Buffer.alloc(0);
-      callback();
-    },
-  });
-}
 
 export function calculateRMS(pcm: Buffer): number {
   const sampleCount = Math.floor(pcm.length / BYTES_PER_SAMPLE);
@@ -476,33 +317,5 @@ export class SpeechBuffer {
 
   private pcmToMs(byteLength: number): number {
     return (byteLength / BYTES_PER_SAMPLE / STT_SAMPLE_RATE) * 1000;
-  }
-}
-
-/**
- * Upsample 24 kHz mono 16-bit PCM to 48 kHz stereo (Discord's raw format)
- * with linear interpolation. Stateful across chunks, tolerates odd chunk sizes.
- */
-export class PcmUpsampler {
-  private carry: Buffer = Buffer.alloc(0);
-  private previous = 0;
-
-  process(input: Buffer): Buffer {
-    const data = this.carry.length > 0 ? Buffer.concat([this.carry, input]) : input;
-    const samples = data.length >> 1;
-    this.carry = Buffer.from(data.subarray(samples * 2));
-
-    const output = Buffer.allocUnsafe(samples * 8); // 2 stereo frames per input sample
-    let offset = 0;
-    for (let i = 0; i < samples; i++) {
-      const sample = data.readInt16LE(i * 2);
-      const midpoint = (this.previous + sample) >> 1;
-      offset = output.writeInt16LE(midpoint, offset);
-      offset = output.writeInt16LE(midpoint, offset);
-      offset = output.writeInt16LE(sample, offset);
-      offset = output.writeInt16LE(sample, offset);
-      this.previous = sample;
-    }
-    return output;
   }
 }

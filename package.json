@@ -1,7 +1,7 @@
 {
   "name": "jarvis-voice",
   "version": "0.1.0",
-  "description": "Local voice assistant: speak through the PC microphone, Azure OpenAI brain, Claude Code tools over MCP.",
+  "description": "Local voice assistant for Windows: talk to Luna (Azure OpenAI), Claude Code workers do the work.",
   "license": "Apache-2.0",
   "private": true,
   "type": "module",
@@ -14,10 +14,8 @@
     "test:tags": "npm run build && node test/tags.mjs"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.32.2",
     "avr-vad": "^1.0.9",
     "ffmpeg-static": "^5.2.0",
-    "opusscript": "^0.0.8",
     "ws": "^8.18.0"
   },
   "devDependencies": {

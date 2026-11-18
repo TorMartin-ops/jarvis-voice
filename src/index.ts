@@ -9,7 +9,7 @@ import { WakeGate } from "./gate.js";
 import { Conversation } from "./conversation.js";
 import { TaskManager } from "./tasks.js";
 import { Memory } from "./memory.js";
-import { runLunaTool, finishNote } from "./luna-tools.js";
+import { runLunaTool, finishNote, afterTools } from "./luna-tools.js";
 import { redact } from "./policy.js";
 
 function log(msg: string): void {
@@ -52,6 +52,7 @@ export async function createAssistant(
       return [`Nå er det ${when} (Norge).`, memory.render()].filter(Boolean).join("\n\n");
     },
     runTool: (name, args) => runLunaTool({ tasks, memory, lastUserText: () => lastUserText, previousReply: () => previousReply, log: logFn }, name, args),
+    afterTools,
   });
 
   conversation = new Conversation({

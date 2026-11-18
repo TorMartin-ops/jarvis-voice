@@ -10,7 +10,7 @@ const { WakeGate } = await import("../dist/gate.js");
 const { isInside, redact } = await import("../dist/policy.js");
 const { parseWorkerEvent, WORKER_DISALLOWED } = await import("../dist/tasks.js");
 const { Memory } = await import("../dist/memory.js");
-const { runLunaTool, finishNote, isConfirmation, confirmationGate } = await import("../dist/luna-tools.js");
+const { runLunaTool, finishNote, isConfirmation, confirmationGate, afterTools } = await import("../dist/luna-tools.js");
 const { parseSseLine } = await import("../dist/brain.js");
 const { loadConfig, loadDotEnv, ConfigError } = await import("../dist/config.js");
 
@@ -207,6 +207,29 @@ t("echo: the assistant's own sentence heard back is recognized", () => {
 t("backchannels are recognized, real requests are not", () => {
   for (const b of ["mm", "Ja.", "okei, skjønner", "Mhm", "jepp"]) assert.equal(isBackchannel(b), true, b);
   for (const r of ["ja, send den", "stopp", "hva er klokka"]) assert.equal(isBackchannel(r), false, r);
+});
+
+// ---- turn policy after tools ------------------------------------------------------
+t("after tools: a started task with nothing said gets a spoken acknowledgement and ends the turn", () => {
+  const r = afterTools([{ name: "start_task", result: 'Started task t1 ("x").' }], "");
+  assert.ok(r.say && r.say.length > 3);
+  assert.equal(r.stop, true);
+});
+t("after tools: success after speech ends the turn; list_tasks and failures continue", () => {
+  assert.deepEqual(afterTools([{ name: "remember", result: "Saved." }], "Notert."), { say: undefined, stop: true });
+  assert.equal(afterTools([{ name: "list_tasks", result: "t1: x - kjører" }], "").stop, false);
+  assert.equal(afterTools([{ name: "list_tasks", result: "t1: x - kjører" }], "La meg se.").stop, false);
+  assert.equal(afterTools([{ name: "cancel_task", result: "No running task with that id." }], "Stopper den.").stop, false);
+  assert.equal(afterTools([{ name: "start_task", result: "ERROR: description is required." }], "").stop, false);
+});
+t("after tools: a block right after asking ends the turn quietly; a block without a question continues", () => {
+  const blocked = [{ name: "start_task", result: "BLOCKED: confirmed_action ..." }];
+  assert.deepEqual(afterTools(blocked, "Skal jeg sende den? Svar «ja, send»."), { say: undefined, stop: true });
+  assert.equal(afterTools(blocked, "Skal bli, jeg sender den.").stop, false, "must correct a wrong promise");
+  assert.equal(afterTools(blocked, "").stop, false);
+});
+t("speech: e-mail addresses are spoken the Norwegian way", () => {
+  assert.equal(toSpeech("Send til test@example.com nå."), "Send til test krøllalfa example punktum com nå.");
 });
 
 console.log(`\n${passed} tests passed`);

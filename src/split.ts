@@ -36,6 +36,9 @@ export function toSpeech(text: string): string {
     .replace(/`([^`]*)`/g, "$1")
     .replace(/(\*\*|__|\*|_)(.+?)\1/g, "$2")
     .replace(/^\s{0,3}(#{1,6}|[-*+]|\d+\.)\s+/gm, "")
+    // Say e-mail addresses the Norwegian way instead of letting the voice guess at "@" and ".".
+    .replace(/([\w.+-]+)@([\w-]+(?:\.[\w-]+)+)/g, (_m, user: string, domain: string) =>
+      `${user} krøllalfa ${domain.split(".").join(" punktum ")}`)
     .replace(/\s+/g, " ")
     .trim();
 }

@@ -111,5 +111,79 @@ await t("an announcement waits until the assistant is idle, then is spoken", asy
   assert.equal(calls[1], null, "report turn has no user text");
 });
 
+// ---- Brain with a fake Azure stream: the turn policy saves a model round trip ----
+const { Brain } = await import("../dist/brain.js");
+const { afterTools } = await import("../dist/luna-tools.js");
+function sse(chunks) {
+  const body = chunks.map((c) => "data: " + JSON.stringify({ choices: [c] }) + "\n\n").join("") + "data: [DONE]\n\n";
+  return new Response(new Blob([body]).stream(), { status: 200 });
+}
+function fakeBrain(runTool) {
+  return new Brain({
+    endpoint: "https://example.invalid", apiKey: "x", deployment: "d", apiVersion: "v",
+    context: () => "", runTool, afterTools,
+  });
+}
+await t("brain: a tool-only start_task step is acknowledged locally with no second model call", async () => {
+  const realFetch = globalThis.fetch;
+  let n = 0;
+  globalThis.fetch = async () => {
+    n++;
+    return sse([
+      { delta: { tool_calls: [{ index: 0, id: "c1", function: { name: "start_task", arguments: '{"title":"Tell filer","description":"Tell .ts-filer"}' } }] } },
+      { delta: {}, finish_reason: "tool_calls" },
+    ]);
+  };
+  try {
+    let heard = "";
+    await fakeBrain(() => 'Started task t1 ("Tell filer").').respond("Jarvis, tell filene.", { onText: (c) => (heard += c) });
+    assert.equal(n, 1, "no second model step");
+    assert.ok(heard.trim().length > 3, "an acknowledgement was spoken");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+await t("brain: a blocked action after a confirmation question ends the turn without an apology", async () => {
+  const realFetch = globalThis.fetch;
+  let n = 0;
+  globalThis.fetch = async () => {
+    n++;
+    return sse([
+      { delta: { content: "Skal jeg sende den? Svar «ja, send»." } },
+      { delta: { tool_calls: [{ index: 0, id: "c1", function: { name: "start_task", arguments: '{"title":"Send","description":"d","confirmed_action":"x"}' } }] } },
+      { delta: {}, finish_reason: "tool_calls" },
+    ]);
+  };
+  try {
+    let heard = "";
+    await fakeBrain(() => "BLOCKED: no confirmation.").respond("send en e-post", { onText: (c) => (heard += c) });
+    assert.equal(n, 1);
+    assert.equal(heard.trim(), "Skal jeg sende den? Svar «ja, send».");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+await t("brain: list_tasks still gets a second step so the result is read out", async () => {
+  const realFetch = globalThis.fetch;
+  let n = 0;
+  globalThis.fetch = async () => {
+    n++;
+    return n === 1
+      ? sse([
+          { delta: { tool_calls: [{ index: 0, id: "c1", function: { name: "list_tasks", arguments: "{}" } }] } },
+          { delta: {}, finish_reason: "tool_calls" },
+        ])
+      : sse([{ delta: { content: "Én oppgave kjører." } }, { delta: {}, finish_reason: "stop" }]);
+  };
+  try {
+    let heard = "";
+    await fakeBrain(() => "t1: Tell filer - kjører").respond("hva skjer?", { onText: (c) => (heard += c) });
+    assert.equal(n, 2);
+    assert.equal(heard.trim(), "Én oppgave kjører.");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
 console.log(`\n${passed} conversation tests passed`);
 process.exit(0);

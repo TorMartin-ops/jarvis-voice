@@ -37,9 +37,47 @@ export function isConfirmation(text: string): boolean {
  * 3. it is short, so the request itself ("send en e-post til ...") can never count as its own confirmation.
  */
 export function confirmationGate(userText: string, previousReply: string): boolean {
-  const asked = /ja, send|«ja|bekreft|gjør det\?|skal jeg sende|skal jeg gjøre/i.test(previousReply);
   const short = userText.trim().split(/\s+/).filter(Boolean).length <= 6;
-  return asked && short && isConfirmation(userText);
+  return askedForConfirmation(previousReply) && short && isConfirmation(userText);
+}
+
+/** True when a reply read an action back and asked for a go-ahead. */
+export function askedForConfirmation(reply: string): boolean {
+  return /ja, send|«ja|bekreft|gjør det\?|skal jeg sende|skal jeg gjøre/i.test(reply);
+}
+
+export interface ToolOutcome {
+  name: string;
+  result: string;
+}
+
+/** Results that mean the tool did what was asked. Anything else (errors, blocks, "nothing matched") needs Luna to explain. */
+const SUCCESS: Record<string, RegExp> = {
+  start_task: /^Started task/,
+  cancel_task: /^Cancelled/,
+  remember: /^(Saved|Already remembered)/,
+  forget: /^Forgot/,
+};
+const succeeded = (o: ToolOutcome) => SUCCESS[o.name]?.test(o.result) ?? false;
+
+const ACKS = ["Skal bli, jeg setter i gang.", "Den er i gang.", "Ordner det.", "Jeg setter en agent på det."];
+let ackTurn = 0;
+
+/**
+ * What happens after a round of tool calls. Saves a model round trip (one to two seconds) and stops
+ * repeated or apologetic speech:
+ * - a task started but nothing was said yet: say a short acknowledgement at once;
+ * - every tool succeeded and something was said: end the turn, there is nothing to add;
+ * - start_task was blocked right after Luna asked for confirmation: end the turn, the question stands;
+ * - anything else (list_tasks, errors, blocks without a question): let Luna continue.
+ */
+export function afterTools(outcomes: ToolOutcome[], spoken: string): { say?: string; stop: boolean } {
+  const started = outcomes.some((o) => o.name === "start_task" && succeeded(o));
+  const say = !spoken.trim() && started ? ACKS[ackTurn++ % ACKS.length] : undefined;
+  if (!spoken.trim() && !say) return { stop: false };
+  if (outcomes.every(succeeded)) return { say, stop: true };
+  const onlyBlocked = outcomes.every((o) => succeeded(o) || o.result.startsWith("BLOCKED"));
+  return { say, stop: onlyBlocked && askedForConfirmation(spoken) };
 }
 
 const STATUS_NO: Record<TaskInfo["status"], string> = {

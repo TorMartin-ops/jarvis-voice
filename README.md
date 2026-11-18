@@ -23,7 +23,7 @@ It uses ElevenLabs audio tags sparingly (at most one per reply): `[laughs]`, `[s
 2. Silero VAD finds where each utterance starts and ends (600 ms of silence by default).
 3. ElevenLabs Scribe turns the utterance into text. Fragments and a bare wake word wait briefly for the rest of the request.
 4. A wake-word gate decides whether the text is for the assistant. Saying "Jarvis" or "Luna" opens a conversation window.
-5. Luna streams the answer. It can start, list and cancel tasks, and remember or forget facts.
+5. Luna streams the answer. It can start, list and cancel tasks, and remember or forget facts. When a tool needs no answer (a task started, a fact saved), the turn ends without another model call, and a short acknowledgement is spoken at once if Luna had not said anything yet.
 6. Each finished sentence goes to ElevenLabs TTS at once and plays through ffplay in order. The next sentence is synthesized while the current one plays.
 7. Talking over the reply for `JARVIS_BARGE_IN_MS` cancels it at once. Luna is told that the rest was not heard.
 
@@ -58,7 +58,7 @@ Use a headset for now. Without one, the speakers reach the microphone and the as
 
 ## Tests
 
-- `npm test`: 25 unit tests and 5 conversation tests with fake services (echo guard, backchannels, barge-in, tag carry-over, announcements), no network.
+- `npm test`: 29 unit tests and 8 conversation tests with fake services (echo guard, backchannels, barge-in, tag carry-over, announcements, the turn policy after tool calls against a fake Azure stream), no network.
 - `npm run test:tags`: every audio tag against live ElevenLabs TTS and STT.
 - `npm run e2e -- "Jarvis, ... | ja, send" --dry-tasks`: spoken multi-turn test through the whole chain. Flags: `--task`, `--echo` (own audio fed back into the mic), `--greet`, `--dry-tasks`.
 

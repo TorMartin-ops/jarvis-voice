@@ -15,8 +15,9 @@ export interface Config {
   endSilenceMs?: number;
   bargeInMs: number;
   mergeMs: number;
-  toolAllow: string[];
-  toolTimeoutMs: number;
+  taskTimeoutMs: number;
+  workerModel?: string;
+  dataDir: string;
   workerCwd: string;
   ffplayPath: string;
   claudeBin: string;
@@ -74,13 +75,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     language: str(env, "JARVIS_LANGUAGE") ?? "nb-NO",
     azure,
     micDevice,
-    wakeWords: wake === undefined ? ["jarvis", "claude", "klaude", "klod", "clod", "cloud", "claud"] : wake.split(",").map((w) => w.trim().toLowerCase()).filter(Boolean),
+    wakeWords: wake === undefined ? ["jarvis", "luna", "claude", "klaude", "klod", "clod", "cloud", "claud"] : wake.split(",").map((w) => w.trim().toLowerCase()).filter(Boolean),
     wakeWindowMs: num(env, "JARVIS_WAKE_WINDOW_MS") ?? 90_000,
-    endSilenceMs: num(env, "JARVIS_END_SILENCE_MS"),
+    // 600 ms: research puts natural end-of-turn waits at 0.6 to 0.8 s; shorter values cut people off.
+    endSilenceMs: num(env, "JARVIS_END_SILENCE_MS") ?? 600,
     bargeInMs: num(env, "JARVIS_BARGE_IN_MS") ?? 400,
     mergeMs: num(env, "JARVIS_MERGE_MS") ?? 800,
-    toolAllow: (str(env, "JARVIS_TOOL_ALLOW") ?? "Read,Glob,Grep,Bash,PowerShell,Edit,Write,WebSearch,WebFetch").split(",").map((s) => s.trim()).filter(Boolean),
-    toolTimeoutMs: num(env, "JARVIS_TOOL_TIMEOUT_MS") ?? 120_000,
+    taskTimeoutMs: num(env, "JARVIS_TASK_TIMEOUT_MS") ?? 30 * 60_000,
+    workerModel: str(env, "JARVIS_WORKER_MODEL"),
+    dataDir: str(env, "JARVIS_DATA_DIR") ?? join(env.USERPROFILE ?? process.cwd(), ".jarvis"),
     workerCwd: str(env, "JARVIS_WORKER_CWD") ?? env.USERPROFILE ?? process.cwd(),
     ffplayPath: str(env, "JARVIS_FFPLAY") ?? "ffplay",
     claudeBin: str(env, "CLAUDE_BIN") ?? join(env.APPDATA ?? "", "npm", "node_modules", "@anthropic-ai", "claude-code", "bin", "claude.exe"),

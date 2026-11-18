@@ -1,28 +1,81 @@
-import type { McpTool } from "./mcp.js";
+import { timing } from "./debug.js";
 
 /**
- * The voice brain: Azure OpenAI chat completions, streamed. With MCP tools it
- * works directly with Claude Code's tools on this PC. Each step is one streamed
- * model call; tool calls run to completion before the next step.
+ * Luna: the voice of the assistant (Azure OpenAI chat completions, streamed).
+ * Luna only talks. Real work is handed to Claude Code workers through start_task,
+ * and results come back as notes that Luna reports by voice.
  */
 
-export const SYSTEM_PROMPT = `Du er Jarvis, en stemmeassistent for Tor Martin. Du snakker norsk bokmål.
+export const SYSTEM_PROMPT = `Du er Jarvis, stemmeassistenten til Tor Martin. Du snakker norsk bokmål. Du er den han snakker med. Selve arbeidet gjøres av arbeidsagenter (Claude Code) på PC-en hans.
 
-Svar kort og naturlig, slik et menneske snakker: én til to korte setninger. Ingen lister, markdown, kodeblokker eller emojier, for alt du skriver blir lest opp. Vær direkte, varm og rolig. Ingen flørting.
+Snakk kort og naturlig, som et menneske: én til to korte setninger. Ingen lister, markdown eller emojier, for alt du skriver blir lest opp. Vær direkte, varm og rolig. Ingen flørting.
 
-Du har verktøy som kjører på Claude Code på PC-en (Bash, Read, Edit, Write, Grep, WebSearch m.fl.). Bruk dem når oppgaven krever det. Si kort hva du gjør før et verktøykall, og oppsummer resultatet i tale når du er ferdig.
+Arbeid: alt som krever filer, kode, nettet, e-post, kalender eller mer enn et kort svar du kan gi selv, starter du med start_task. Gi en kort tittel og en selvstendig beskrivelse med mål, kontekst og hva ferdig betyr. Si en kort setning som «Skal bli, jeg setter i gang» i samme svar som du kaller start_task, slik at han hører deg med en gang. Fortsett samtalen etterpå. Vent aldri på at oppgaven blir ferdig.
 
-Hold verktøykallene raske: avgrens søk (hopp over node_modules, .git og dist), og si kort i tale hvis en operasjon tar lang tid.
+Status: når han spør hva som skjer, bruk list_tasks og svar kort.
 
-Før du sender meldinger, sletter, betaler eller endrer tilganger, spør Tor Martin først og vent på et tydelig ja. Hvis et verktøy svarer BLOCKED, si det til ham og foreslå at han kjører det selv.
+Når du får en melding som starter med [Oppgave ferdig], fortell resultatet i én eller to setninger. Hvis arbeideren trenger en beslutning, still spørsmålet.
 
-Når han ber deg være stille, svar bare med ett kort ord eller ingenting.`;
+Utgående eller irreversible handlinger (sende meldinger eller e-post, poste, pushe, betale, slette): les opp nøyaktig hva som skal skje, med mottaker, innhold eller beløp, og be om et tydelig «ja, send» eller «ja, gjør det». Først da starter du oppgaven med confirmed_action som beskriver akkurat det han bekreftet. Sett aldri confirmed_action uten en slik bekreftelse fra ham i denne samtalen.
 
-export const MAX_STEPS = 8;
-const MAX_HISTORY = 24;
-const MAX_TOKENS = 400;
+Minne: når han ber deg huske noe, bruk remember. Når han ber deg glemme noe, bruk forget. Lagre ingenting han ikke har bedt om.
 
-/** One streamed event for the caller. */
+Hvis du ble avbrutt, ikke gjenta det du sa. Svar på det han sier nå. Når han ber deg være stille, svar med ett kort ord eller ingenting.`;
+
+export const LUNA_TOOLS = [
+  {
+    type: "function" as const,
+    function: {
+      name: "start_task",
+      description: "Start a background Claude Code worker for real work. Returns at once with a task id; the result arrives later as a [Oppgave ferdig] note.",
+      parameters: {
+        type: "object",
+        properties: {
+          title: { type: "string", description: "Short title, 2 to 6 words, Norwegian." },
+          description: { type: "string", description: "Self-contained task: goal, context, paths, and what done means." },
+          confirmed_action: {
+            type: "string",
+            description: "Only if Tor Martin explicitly confirmed an outward or irreversible action in this conversation: exactly what he confirmed (recipient, content, amount). Otherwise omit.",
+          },
+        },
+        required: ["title", "description"],
+      },
+    },
+  },
+  {
+    type: "function" as const,
+    function: { name: "list_tasks", description: "List recent tasks with status and progress.", parameters: { type: "object", properties: {} } },
+  },
+  {
+    type: "function" as const,
+    function: {
+      name: "cancel_task",
+      description: "Stop a running task.",
+      parameters: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+    },
+  },
+  {
+    type: "function" as const,
+    function: {
+      name: "remember",
+      description: "Save a stable fact or preference Tor Martin asked you to remember.",
+      parameters: { type: "object", properties: { fact: { type: "string" } }, required: ["fact"] },
+    },
+  },
+  {
+    type: "function" as const,
+    function: {
+      name: "forget",
+      description: "Delete remembered facts that contain this phrase.",
+      parameters: { type: "object", properties: { phrase: { type: "string" } }, required: ["phrase"] },
+    },
+  },
+];
+
+export const MAX_STEPS = 4;
+const MAX_HISTORY = 30;
+const MAX_TOKENS = 300;
+
 export interface BrainHooks {
   onText(chunk: string): void;
   onToolStart?(name: string): void;
@@ -59,8 +112,9 @@ export interface BrainOptions {
   apiKey: string;
   deployment: string;
   apiVersion: string;
-  tools: () => McpTool[];
-  runTool: (name: string, args: Record<string, unknown>) => Promise<string>;
+  /** Extra system text added each turn (long-term memory). */
+  context: () => string;
+  runTool: (name: string, args: Record<string, unknown>) => Promise<string> | string;
 }
 
 export class Brain {
@@ -72,20 +126,20 @@ export class Brain {
     this.url = `${base}openai/deployments/${encodeURIComponent(opts.deployment)}/chat/completions?api-version=${opts.apiVersion}`;
   }
 
-  /** Add context that is not something Tor Martin said. */
+  /** Add context that Tor Martin did not say himself (task results, interruptions). */
   note(text: string): void {
     this.history.push({ role: "user", content: `[System] ${text}` });
     this.trim();
   }
 
-  /** Answer one user utterance, streaming text to `hooks.onText`. Throws on abort or API failure. */
-  async respond(userText: string, hooks: BrainHooks, signal?: AbortSignal): Promise<void> {
-    this.history.push({ role: "user", content: userText });
-    const specs = this.toolSpecs();
-    const system = specs.length ? SYSTEM_PROMPT : SYSTEM_PROMPT.replace(/\n\nDu har verktøy[\s\S]*?oppsummer resultatet i tale når du er ferdig\./, "");
+  /** Answer a user utterance, or (with null) the notes already added. Streams text to hooks.onText. */
+  async respond(userText: string | null, hooks: BrainHooks, signal?: AbortSignal): Promise<void> {
+    if (userText) this.history.push({ role: "user", content: userText });
+    const extra = this.opts.context();
+    const system = extra ? `${SYSTEM_PROMPT}\n\n${extra}` : SYSTEM_PROMPT;
 
     for (let step = 0; step < MAX_STEPS; step++) {
-      const { text, toolCalls, finish } = await this.streamStep(system, specs, hooks, signal);
+      const { text, toolCalls, finish } = await this.streamStep(system, hooks, signal);
       if (finish !== "tool_calls" || toolCalls.length === 0) {
         this.history.push({ role: "assistant", content: text });
         this.trim();
@@ -99,34 +153,26 @@ export class Brain {
       for (const c of toolCalls) {
         if (signal?.aborted) throw new DOMException("aborted", "AbortError");
         hooks.onToolStart?.(c.name);
-        const content = await this.runOne(c);
-        this.history.push({ role: "tool", tool_call_id: c.id, content });
+        this.history.push({ role: "tool", tool_call_id: c.id, content: await this.runOne(c) });
       }
     }
-    const note = "Jeg rakk ikke å bli ferdig. Vil du at jeg fortsetter?";
-    hooks.onText(note);
-    this.history.push({ role: "assistant", content: note });
+    this.history.push({ role: "assistant", content: "" });
     this.trim();
   }
 
-  private toolSpecs() {
-    return this.opts.tools().map((t) => ({
-      type: "function" as const,
-      function: { name: t.name, description: t.description, parameters: t.parameters },
-    }));
-  }
-
-  private async streamStep(system: string, tools: ReturnType<Brain["toolSpecs"]>, hooks: BrainHooks, signal?: AbortSignal) {
+  private async streamStep(system: string, hooks: BrainHooks, signal?: AbortSignal) {
+    const started = Date.now();
     const res = await fetch(this.url, {
       method: "POST",
       headers: { "api-key": this.opts.apiKey, "content-type": "application/json" },
       body: JSON.stringify({
         messages: [{ role: "system", content: system }, ...this.history],
-        ...(tools.length ? { tools } : {}),
+        tools: LUNA_TOOLS,
         stream: true,
         max_completion_tokens: MAX_TOKENS,
-        // Voice needs the first word fast. Function tools need reasoning off on chat completions for this model.
+        // Voice needs the first word fast; function tools need reasoning off on chat completions for this model family.
         reasoning_effort: "none",
+        prompt_cache_key: "jarvis-luna",
       }),
       signal,
     });
@@ -138,6 +184,7 @@ export class Brain {
     const calls = new Map<number, ToolCallAcc>();
     let text = "";
     let finish: string | null = null;
+    let first = true;
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let pending = "";
@@ -152,6 +199,10 @@ export class Brain {
         const choice = parseSseLine(line)?.choices?.[0];
         if (!choice) continue;
         const delta = choice.delta ?? {};
+        if (first && (delta.content || delta.tool_calls)) {
+          timing(`LLM_TTFT: ${Date.now() - started}ms`);
+          first = false;
+        }
         if (delta.content) {
           text += delta.content;
           hooks.onText(delta.content);

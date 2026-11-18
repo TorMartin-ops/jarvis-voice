@@ -6,7 +6,10 @@ import { join } from "node:path";
 
 const { SentenceSplitter, toSpeech } = await import("../dist/split.js");
 const { WakeGate } = await import("../dist/gate.js");
-const { checkTool, isInside, redact } = await import("../dist/policy.js");
+const { isInside, redact } = await import("../dist/policy.js");
+const { parseWorkerEvent, WORKER_DISALLOWED } = await import("../dist/tasks.js");
+const { Memory } = await import("../dist/memory.js");
+const { runLunaTool, finishNote } = await import("../dist/luna-tools.js");
 const { parseSseLine } = await import("../dist/brain.js");
 const { loadConfig, loadDotEnv, ConfigError } = await import("../dist/config.js");
 
@@ -67,23 +70,49 @@ t("gate: no words configured means everything is admitted", () => {
   assert.equal(new WakeGate([], 1000).admit("alt"), true);
 });
 
-// ---- policy -----------------------------------------------------------------
+// ---- workers, Luna's tools, memory ------------------------------------------
 const root = "C:/Users/torma/work";
-t("policy: destructive and outward commands are blocked", () => {
-  for (const cmd of ["git push origin main", "Remove-Item C:/x -Recurse", "rm -rf build", "Send-MailMessage -To a", "curl -X POST https://x", "shutdown /s"]) {
-    assert.match(checkTool("Bash", { command: cmd }, root) ?? "", /BLOCKED/, cmd);
-  }
+t("workers may never push, delete recursively or send mail", () => {
+  for (const rule of ["Bash(git push:*)", "Bash(rm -rf:*)", "PowerShell(Send-MailMessage:*)"]) assert.ok(WORKER_DISALLOWED.includes(rule), rule);
 });
-t("policy: ordinary commands are allowed", () => {
-  for (const cmd of ["git status", "npm test", "Get-ChildItem", "dir"]) {
-    assert.equal(checkTool("Bash", { command: cmd }, root), null, cmd);
-  }
+t("worker stream: tool use, text and final result are parsed", () => {
+  const a = parseWorkerEvent(JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "Bash" }, { type: "text", text: "ok" }] } }));
+  assert.deepEqual(a, [{ kind: "tool", name: "Bash" }, { kind: "text", text: "ok" }]);
+  const r = parseWorkerEvent(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "Ferdig.", total_cost_usd: 0.01 }));
+  assert.deepEqual(r, [{ kind: "result", ok: true, text: "Ferdig.", costUsd: 0.01 }]);
+  assert.deepEqual(parseWorkerEvent("not json"), []);
 });
-t("policy: writes stay inside the worker folder", () => {
-  assert.equal(checkTool("Write", { file_path: "C:/Users/torma/work/a.txt" }, root), null);
-  assert.equal(checkTool("Edit", { file_path: "notes.md" }, root), null);
-  assert.match(checkTool("Write", { file_path: "C:/Windows/system.ini" }, root) ?? "", /BLOCKED/);
-  assert.match(checkTool("Write", { file_path: "C:/Users/torma/work/../secret.txt" }, root) ?? "", /BLOCKED/);
+t("Luna's tools: start, list, cancel, remember, forget", () => {
+  const started = [];
+  const deps = {
+    tasks: {
+      start: (title, description, confirmed) => { const task = { id: "t1", title, description, confirmedAction: confirmed, status: "running", startedAt: "x", progress: "steg 1: Bash", steps: 1 }; started.push(task); return task; },
+      list: () => started,
+      cancel: (id) => id === "t1",
+    },
+    memory: { add: (x) => x === "kaffe uten melk", forget: (p) => (p === "kaffe" ? 1 : 0) },
+  };
+  assert.match(runLunaTool(deps, "start_task", { title: "Test", description: "Gjør noe" }), /Started task t1/);
+  assert.equal(started[0].confirmedAction, undefined);
+  assert.match(runLunaTool(deps, "start_task", { title: "x" }), /ERROR/);
+  assert.ok(runLunaTool(deps, "list_tasks", {}).includes("t1: Test - kjører (steg 1: Bash)"));
+  assert.equal(runLunaTool(deps, "cancel_task", { id: "t1" }), "Cancelled.");
+  assert.equal(runLunaTool(deps, "remember", { fact: "kaffe uten melk" }), "Saved.");
+  assert.match(runLunaTool(deps, "forget", { phrase: "kaffe" }), /Forgot 1/);
+  assert.match(runLunaTool(deps, "nope", {}), /unknown tool/);
+});
+t("finish note tells Luna the status and result", () => {
+  assert.equal(finishNote({ id: "t1", title: "Test", status: "done", result: "Alt ok.", description: "", startedAt: "", progress: "", steps: 0 }), '[Oppgave ferdig] "Test" (t1) er ferdig. Resultat: Alt ok.');
+});
+t("memory: dedupes, forgets, persists, renders", () => {
+  const dir = mkdtempSync(join(tmpdir(), "jv-mem-"));
+  const m = new Memory(join(dir, "memory.json"));
+  assert.equal(m.add("Liker kaffe svart"), true);
+  assert.equal(m.add("liker kaffe svart"), false);
+  assert.match(m.render(), /Liker kaffe svart/);
+  assert.equal(new Memory(join(dir, "memory.json")).list().length, 1);
+  assert.equal(m.forget("kaffe"), 1);
+  assert.equal(m.render(), "");
 });
 t("isInside rejects prefix tricks and traversal", () => {
   assert.equal(isInside("C:/Users/torma/work-evil/x", root), false);
@@ -116,7 +145,8 @@ t("config: defaults and parsing", () => {
   });
   assert.equal(cfg.bargeInMs, 400);
   assert.equal(cfg.wakeWindowMs, 90000);
-  assert.ok(cfg.toolAllow.includes("Bash"));
+  assert.equal(cfg.taskTimeoutMs, 1800000);
+  assert.ok(cfg.wakeWords.includes("luna"));
   assert.throws(() => loadConfig({ ...process.env, ELEVENLABS_API_KEY: "e", JARVIS_BARGE_IN_MS: "-1", AZURE_OPENAI_ENDPOINT: "x", AZURE_OPENAI_API_KEY: "k", AZURE_OPENAI_DEPLOYMENT: "d", JARVIS_MIC: "m" }), ConfigError);
 });
 t("config: .env loads without overriding real environment", () => {

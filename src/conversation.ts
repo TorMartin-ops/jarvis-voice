@@ -112,6 +112,35 @@ export class Conversation {
     this.d.stt.dispose();
   }
 
+  /**
+   * Something happened that Luna should tell Tor Martin about (a task finished).
+   * The note goes into Luna's context at once; she speaks about it as soon as the
+   * conversation is idle, unless he talks first (then she sees it in that turn).
+   */
+  announce(note: string): void {
+    this.d.brain.note(note);
+    this.announcePending = true;
+    this.tryAnnounce();
+  }
+
+  private announcePending = false;
+  private announceTimer: ReturnType<typeof setTimeout> | null = null;
+
+  private tryAnnounce(): void {
+    if (!this.announcePending) return;
+    if (this.state === "listening" && !this.session && !this.pending) {
+      this.announcePending = false;
+      this.runTurn(null);
+      return;
+    }
+    if (!this.announceTimer) {
+      this.announceTimer = setTimeout(() => {
+        this.announceTimer = null;
+        this.tryAnnounce();
+      }, 500);
+    }
+  }
+
   // ---- microphone events -------------------------------------------------
 
   private async process(pcm: Buffer): Promise<void> {
@@ -167,7 +196,9 @@ export class Conversation {
       return;
     }
     const command = this.d.gate.strip(text);
-    const unfinished = !/[.!?…]$/.test(command);
+    // Very short pieces ("Hei.") are usually the start of a longer request, even with a full stop.
+    const words = command.split(/\s+/).filter(Boolean).length;
+    const unfinished = words <= 2 || !/[.!?…]$/.test(command);
     if (!command || (unfinished && this.d.mergeMs > 0)) {
       // Wake word alone, or a fragment: wait briefly for the rest before answering.
       this.pending = {
@@ -189,10 +220,11 @@ export class Conversation {
     this.d.gate.extend();
     this.d.log(`heard: ${command}`);
     if (this.state !== "listening") this.interrupt("new utterance");
+    this.announcePending = false; // Luna sees any pending note in this turn
     this.runTurn(command);
   }
 
-  private runTurn(text: string): void {
+  private runTurn(text: string | null): void {
     const ctl = new AbortController();
     const gen = this.generation;
     this.turn = ctl;
@@ -260,6 +292,7 @@ export class Conversation {
             if (this.reportLatency && this.endedAt) {
               timing(`TURN_LATENCY: ${Date.now() - this.endedAt}ms from end of speech to first audio`);
               this.reportLatency = false;
+              this.endedAt = 0; // measure only replies to speech, not later announcements
             }
             this.d.speaker.write(chunk);
           }
@@ -271,16 +304,21 @@ export class Conversation {
 
   /** When nothing is left to say or play, let the player finish its tail and exit. */
   private idleCheck(): void {
-    if (!this.turn && this.queue.length === 0) this.d.speaker.finish();
+    if (!this.turn && this.queue.length === 0) {
+      this.d.speaker.finish();
+      this.tryAnnounce();
+    }
   }
 
   /** Cancel the reply and all queued speech, at once. */
   private interrupt(reason: string): void {
+    const wasBusy = this.state !== "listening";
     this.generation++;
     this.turn?.abort();
     this.turn = null;
     this.queue = [];
     this.d.speaker.stop();
+    if (wasBusy && reason !== "shutdown") this.d.brain.note("Du ble avbrutt. Resten av forrige svar ble ikke hørt.");
     debugLog(`interrupt: ${reason}`);
   }
 }

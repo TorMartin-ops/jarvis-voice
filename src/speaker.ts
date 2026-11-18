@@ -44,7 +44,9 @@ export class Speaker {
   private start(): ChildProcess {
     const p = spawn(
       this.ffplay,
-      ["-hide_banner", "-loglevel", "error", "-nodisp", "-fflags", "nobuffer", "-probesize", "32", "-analyzeduration", "0", "-f", "s16le", "-ar", "24000", "-ac", "1", "-i", "-"],
+      // FFmpeg 7+ removed -ac as an input option; -ch_layout is the replacement. -autoexit lets a
+      // finished player drain and exit on its own after stdin closes.
+      ["-hide_banner", "-loglevel", "error", "-nodisp", "-autoexit", "-fflags", "nobuffer", "-probesize", "32", "-analyzeduration", "0", "-f", "s16le", "-ar", "24000", "-ch_layout", "mono", "-i", "-"],
       { windowsHide: true, stdio: ["pipe", "ignore", "ignore"] },
     );
     p.stdin?.on("error", () => {});

@@ -1,48 +1,52 @@
 # jarvis-voice
 
-A Discord voice assistant. A fast voice model (Claude Haiku, via the Messages API) talks with you in a voice channel. Real work (code, files, research) is handed to background workers, which are Claude Code sessions on the same PC. Results are reported back by voice.
+A local voice assistant for Windows. You talk to it through the PC microphone and it answers through the speakers. The brain is an Azure OpenAI chat model. It works with Claude Code's own tools (Bash, Read, Edit, Grep, web search) over MCP, so it can act on this PC.
 
-Speech-to-text and text-to-speech use ElevenLabs. Discord audio uses discord.js and @discordjs/voice.
+No Discord, no messaging app. Everything runs on your machine, and the only network calls are to ElevenLabs (speech) and Azure OpenAI (the brain).
 
-## How it works
+## How a turn works
 
-1. You speak in the joined voice channel. Voice activity detection finds the end of your sentence.
-2. ElevenLabs Scribe turns the speech into text.
-3. Haiku answers in one or two short sentences, streamed to ElevenLabs TTS sentence by sentence.
-4. For a task, Haiku calls `delegate_task`. A worker runs `claude -p` in the background and writes its report to `~/.jarvis/reports/`. When it finishes, Haiku reports the summary by voice.
-5. Speaking over the bot cuts its reply off, and replies to the old turn are dropped.
+1. The microphone is captured by ffmpeg (16 kHz mono).
+2. Silero VAD finds the start and end of each utterance.
+3. ElevenLabs Scribe turns the utterance into text.
+4. A wake-word gate decides whether the text is for the assistant. Naming it opens a conversation window.
+5. Azure OpenAI streams the answer. Tool calls run through Claude Code over MCP.
+6. Each sentence is sent to ElevenLabs TTS as soon as it is complete, and played through ffplay in order.
+7. Talking over the reply for `JARVIS_BARGE_IN_MS` cancels it at once: speech stops, the brain is aborted, and replies to the cancelled turn are discarded.
 
 ## Setup
 
-Requirements: Node.js 20+, a Discord bot in a server with voice enabled, an ElevenLabs key, and Claude Code installed and logged in on the PC. An Anthropic API key is optional: with it the brain streams from the API (faster); without it each turn runs Claude Code on the PC.
+Requirements: Windows 10 or 11, Node.js 20 or newer, Claude Code installed and logged in, an ElevenLabs key, an Azure OpenAI deployment with function calling, and FFmpeg (full build, for ffplay).
 
-```bash
+```powershell
 npm install
-cp .env.example .env   # then fill in the values
-npm test
-npm start
+copy .env.example .env      # then fill in the values
+npm run devices             # shows the microphone names; copy one into JARVIS_MIC
+npm test                    # unit tests, no network
+npm start                   # starts the assistant
 ```
 
-Discord bot permissions: View Channel, Connect, Speak, and the Server Members and Voice State intents. Add `Move Members` only if you want the bot to move people.
+For the best results, use a headset. Without one, the speakers can be heard by the microphone, and the assistant may interrupt itself.
 
-## Brains
+`npm run e2e -- "Jarvis, hva klokka er?"` runs one real request through the whole chain (it speaks a phrase with ElevenLabs and checks the answer). It uses API credits.
 
-Set the first one whose settings are present in `.env`:
+## Safety
 
-1. **Azure OpenAI** (`AZURE_OPENAI_*`): streamed, with Claude Code's own tools (Bash, Read, Edit, Write, Grep, WebSearch) reached over MCP (`claude mcp serve`). Every tool call is written to `~/.jarvis/audit.log`.
-2. **Anthropic API** (`ANTHROPIC_API_KEY`): streamed, with a `delegate_task` tool that starts a background Claude Code worker.
-3. **Claude Code on this PC** (no key): one `claude -p` per turn. Slower, no streaming.
+- Tools reached over MCP run with Claude Code's permissions on this PC. The allowlist (`JARVIS_TOOL_ALLOW`) decides which tools exist.
+- `src/policy.ts` blocks commands that push to git, delete recursively, send mail, post over HTTP, change the registry or users, shut down, or publish packages. A blocked command returns a message the assistant must relay, so you can run it yourself.
+- Write and Edit only work inside `JARVIS_WORKER_CWD`. Paths with `..` are rejected.
+- Every tool call and result is written to `~/.jarvis/audit.log`, with secrets redacted.
+- Keys live only in `.env`, which is gitignored.
 
-## Security
+## Limits
 
-- Keep `.env` out of git. It is listed in `.gitignore`.
-- Tools reached over MCP run with Claude Code's own permissions on this PC. Restrict them with `JARVIS_TOOL_ALLOW`. Write and Edit can change files, so review the audit log.
-- Workers run in `auto` permission mode. The worker prompt forbids sending messages, paying, or deleting unless a task names it explicitly. Review the reports in `~/.jarvis/reports/`.
-- Only users in `VOICE_ALLOWED_USERS` are heard.
+- It has not been tested in a shared room or with a headset yet. Echo and background speech are the main risks.
+- Latency depends on the tools. A recursive search can take 20 seconds. Keep requests specific.
+- Only the brain in the Azure deployment is supported. There is no fallback model.
 
-## Tuning
+## Tests
 
-Defaults are in `.env.example`. Latency is logged to `latency.log` when `VOICE_DEBUG=1` or higher.
+`npm test` runs unit tests for sentence splitting, markdown stripping, the wake-word gate, the safety policy, redaction, SSE parsing, and config loading.
 
 ## License
 

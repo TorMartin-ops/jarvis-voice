@@ -54,6 +54,21 @@ export const WORKER_DISALLOWED = [
   "PowerShell(Send-MailMessage:*)",
   "PowerShell(Stop-Computer:*)",
   "PowerShell(Restart-Computer:*)",
+  // macOS and other Unix systems.
+  "Bash(rm -fr:*)",
+  "Bash(rm -R:*)",
+  "Bash(sudo:*)",
+  "Bash(reboot:*)",
+  "Bash(halt:*)",
+  "Bash(security:*)", // macOS keychain: could read or delete saved passwords
+  "Bash(osascript:*)", // AppleScript can send Mail and Messages
+  "Bash(mail:*)",
+  "Bash(sendmail:*)",
+  "Bash(dscl:*)", // user accounts
+  "Bash(diskutil erase:*)",
+  "Bash(diskutil eraseDisk:*)",
+  "Bash(diskutil eraseVolume:*)",
+  "Bash(csrutil:*)",
 ];
 
 export const WORKER_RULES = `You are a background worker for Jarvis, a voice assistant for Tor Martin. Finish the task below on your own.

@@ -1,0 +1,35 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Unit and conversation tests: no network, no keys, no audio devices.
+      - run: npm test
+      # The bundled ffmpeg must have the platform's microphone driver.
+      - name: ffmpeg has the microphone driver
+        shell: bash
+        run: |
+          FFMPEG=$(node -e "import('ffmpeg-static').then(m => console.log(m.default))")
+          if [ "$RUNNER_OS" = "macOS" ]; then DRIVER=avfoundation; else DRIVER=dshow; fi
+          "$FFMPEG" -hide_banner -devices 2>/dev/null | grep -w "$DRIVER"
+      # The device listing runs end to end (a CI runner may have no microphones, so an empty list is fine).
+      - run: node dist/index.js --devices

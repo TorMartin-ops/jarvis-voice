@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
+import { homedir } from "os";
 
 /** Everything the app needs, read once from the environment (.env loaded first). */
 export interface Config {
@@ -49,7 +50,18 @@ const num = (env: NodeJS.ProcessEnv, k: string): number | undefined => {
   return n;
 };
 
-export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
+/**
+ * Where Claude Code usually lives: the native installer puts it in ~/.local/bin; on Windows the npm
+ * global install is under %APPDATA%. Falls back to "claude" on PATH (macOS) or the npm path (Windows).
+ */
+export function defaultClaudeBin(env: NodeJS.ProcessEnv, platform: NodeJS.Platform, home: string): string {
+  const native = join(home, ".local", "bin", platform === "win32" ? "claude.exe" : "claude");
+  if (platform !== "win32") return existsSync(native) ? native : "claude";
+  const npm = join(env.APPDATA ?? join(home, "AppData", "Roaming"), "npm", "node_modules", "@anthropic-ai", "claude-code", "bin", "claude.exe");
+  return existsSync(npm) || !existsSync(native) ? npm : native;
+}
+
+export function loadConfig(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): Config {
   const missing: string[] = [];
   const need = (k: string): string => {
     const v = str(env, k);
@@ -63,7 +75,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     deployment: need("AZURE_OPENAI_DEPLOYMENT"),
     apiVersion: str(env, "AZURE_OPENAI_API_VERSION") ?? "2024-10-21",
   };
-  const micDevice = need("JARVIS_MIC");
+  // macOS can use the system default input; DirectShow on Windows has no default, so a name is required.
+  const micDevice = platform === "darwin" ? str(env, "JARVIS_MIC") ?? "default" : need("JARVIS_MIC");
+  const home = (platform === "win32" ? str(env, "USERPROFILE") : str(env, "HOME")) ?? homedir();
   if (missing.length) {
     throw new ConfigError(`Missing settings in .env: ${missing.join(", ")}. Run "npm run devices" to find JARVIS_MIC.`);
   }
@@ -85,9 +99,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     audioMode: str(env, "JARVIS_AUDIO_MODE") === "speakers" ? "speakers" : "headset",
     taskTimeoutMs: num(env, "JARVIS_TASK_TIMEOUT_MS") ?? 30 * 60_000,
     workerModel: str(env, "JARVIS_WORKER_MODEL"),
-    dataDir: str(env, "JARVIS_DATA_DIR") ?? join(env.USERPROFILE ?? process.cwd(), ".jarvis"),
-    workerCwd: str(env, "JARVIS_WORKER_CWD") ?? env.USERPROFILE ?? process.cwd(),
+    dataDir: str(env, "JARVIS_DATA_DIR") ?? join(home, ".jarvis"),
+    workerCwd: str(env, "JARVIS_WORKER_CWD") ?? home,
     ffplayPath: str(env, "JARVIS_FFPLAY") ?? "ffplay",
-    claudeBin: str(env, "CLAUDE_BIN") ?? join(env.APPDATA ?? "", "npm", "node_modules", "@anthropic-ai", "claude-code", "bin", "claude.exe"),
+    claudeBin: str(env, "CLAUDE_BIN") ?? defaultClaudeBin(env, platform, home),
   };
 }

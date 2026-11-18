@@ -13,6 +13,7 @@ const { Memory } = await import("../dist/memory.js");
 const { runLunaTool, finishNote, isConfirmation, confirmationGate, afterTools } = await import("../dist/luna-tools.js");
 const { parseSseLine } = await import("../dist/brain.js");
 const { loadConfig, loadDotEnv, ConfigError } = await import("../dist/config.js");
+const { micInputArgs, listDeviceArgs, parseDeviceList, ffmpegBinary } = await import("../dist/mic.js");
 
 let passed = 0;
 const t = (name, fn) => {
@@ -135,7 +136,7 @@ t("SSE: data lines parse, control lines are ignored", () => {
 
 // ---- config -------------------------------------------------------------------
 t("config: missing required settings are listed", () => {
-  assert.throws(() => loadConfig({}), (e) => e instanceof ConfigError && /ELEVENLABS_API_KEY/.test(e.message) && /JARVIS_MIC/.test(e.message));
+  assert.throws(() => loadConfig({}, "win32"), (e) => e instanceof ConfigError && /ELEVENLABS_API_KEY/.test(e.message) && /JARVIS_MIC/.test(e.message));
 });
 t("config: defaults and parsing", () => {
   const cfg = loadConfig({
@@ -230,6 +231,45 @@ t("after tools: a block right after asking ends the turn quietly; a block withou
 });
 t("speech: e-mail addresses are spoken the Norwegian way", () => {
   assert.equal(toSpeech("Send til test@example.com nå."), "Send til test krøllalfa example punktum com nå.");
+});
+
+// ---- macOS and Windows ------------------------------------------------------------
+t("mic: Windows uses DirectShow, macOS uses AVFoundation audio-only input", () => {
+  assert.deepEqual(micInputArgs("Mikrofon (HyperX)", "win32"), ["-f", "dshow", "-i", "audio=Mikrofon (HyperX)"]);
+  assert.deepEqual(micInputArgs("MacBook Pro Microphone", "darwin"), ["-f", "avfoundation", "-i", ":MacBook Pro Microphone"]);
+  assert.deepEqual(micInputArgs("", "darwin"), ["-f", "avfoundation", "-i", ":default"]);
+  assert.throws(() => micInputArgs("x", "linux"), /not supported on linux/);
+  assert.ok(listDeviceArgs("darwin").includes("avfoundation"));
+  assert.ok(listDeviceArgs("win32").includes("dshow"));
+});
+t("mic: device lists parse on both platforms", () => {
+  const mac = [
+    "[AVFoundation indev @ 0x7f8] AVFoundation video devices:",
+    "[AVFoundation indev @ 0x7f8] [0] FaceTime HD Camera",
+    "[AVFoundation indev @ 0x7f8] [1] Capture screen 0",
+    "[AVFoundation indev @ 0x7f8] AVFoundation audio devices:",
+    "[AVFoundation indev @ 0x7f8] [0] MacBook Pro Microphone",
+    "[AVFoundation indev @ 0x7f8] [1] AirPods Pro",
+    ": Input/output error",
+  ].join("\n");
+  assert.deepEqual(parseDeviceList(mac, "darwin"), ["MacBook Pro Microphone", "AirPods Pro"]);
+  const win = '[dshow @ 0x1] "HD Webcam" (video)\n[dshow @ 0x1] "Mikrofon (HyperX Cloud II Wireless)" (audio)\n[dshow @ 0x1]   Alternative name "@device_cm_x"';
+  assert.deepEqual(parseDeviceList(win, "win32"), ["Mikrofon (HyperX Cloud II Wireless)"]);
+  assert.equal(ffmpegBinary({ JARVIS_FFMPEG: "/opt/homebrew/bin/ffmpeg" }), "/opt/homebrew/bin/ffmpeg");
+});
+t("config: macOS defaults to the system microphone, home folder and claude on PATH", () => {
+  const base = { ELEVENLABS_API_KEY: "e", AZURE_OPENAI_ENDPOINT: "https://x/", AZURE_OPENAI_API_KEY: "k", AZURE_OPENAI_DEPLOYMENT: "d" };
+  const mac = loadConfig({ ...base, HOME: "/Users/tm-test-nonexistent" }, "darwin");
+  assert.equal(mac.micDevice, "default");
+  assert.equal(mac.dataDir.replace(/\\/g, "/"), "/Users/tm-test-nonexistent/.jarvis");
+  assert.equal(mac.workerCwd, "/Users/tm-test-nonexistent");
+  assert.equal(mac.claudeBin, "claude");
+  assert.throws(() => loadConfig(base, "win32"), (e) => e instanceof ConfigError && /JARVIS_MIC/.test(e.message), "Windows still needs a device name");
+  const win = loadConfig({ ...base, JARVIS_MIC: "Mikrofon", USERPROFILE: "C:/Users/x", APPDATA: "C:/Users/x/AppData/Roaming" }, "win32");
+  assert.match(win.claudeBin.replace(/\\/g, "/"), /claude-code\/bin\/claude\.exe$/);
+});
+t("workers are blocked from macOS keychain, AppleScript, sudo and mail", () => {
+  for (const rule of ["Bash(sudo:*)", "Bash(security:*)", "Bash(osascript:*)", "Bash(sendmail:*)", "Bash(rm -fr:*)"]) assert.ok(WORKER_DISALLOWED.includes(rule), rule);
 });
 
 console.log(`\n${passed} tests passed`);

@@ -4,7 +4,8 @@ import type { Brain } from "./brain.js";
 import type { Speaker } from "./speaker.js";
 import type { WakeGate } from "./gate.js";
 import { synthesize } from "./tts.js";
-import { SentenceSplitter, toSpeech } from "./split.js";
+import { SentenceSplitter, toSpeech, sanitizeTags, stripTags } from "./split.js";
+import { isEcho, isBackchannel } from "./echo.js";
 import { debugLog, debugText, timing } from "./debug.js";
 import { redact } from "./policy.js";
 
@@ -29,6 +30,14 @@ export interface ConversationDeps {
   tts: { apiKey: string; voice: string; model: string };
   bargeInMs: number;
   mergeMs: number;
+  /** headset: talking over the reply cuts it after bargeInMs. speakers: only a real transcript cuts it (echo-safe). */
+  audioMode: "headset" | "speakers";
+  /** Optional tap on every PCM chunk sent to the speaker (24 kHz mono s16le). Used by tests. */
+  onAudioOut?: (pcm: Buffer) => void;
+  /** Text-to-speech function; defaults to ElevenLabs. Tests pass a fake. */
+  synth?: typeof synthesize;
+  /** Called at the start of every turn with what Tor Martin said ("" for report turns). */
+  onUserTurn?: (text: string, previousReply: string) => void;
   log: (msg: string) => void;
 }
 
@@ -87,11 +96,20 @@ export class Conversation {
   private endedAt = 0;
   private reportLatency = false;
   private pending: { text: string; timer: ReturnType<typeof setTimeout> } | null = null;
+  /** What the assistant said recently (words only), for the echo guard. */
+  private recentSpoken: { text: string; at: number }[] = [];
+  /** When the audio written so far will have finished playing (wall clock). Writes run ahead of playback. */
+  private playbackEndsAt = 0;
+  /** Audio tags that arrived as their own "sentence"; they are put in front of the next one. */
+  private carryTags = "";
+  /** Words spoken in the current turn, and in the turn before (for the confirmation gate). */
+  private replyNow = "";
+  private replyBefore = "";
 
   constructor(private readonly d: ConversationDeps) {}
 
   get state(): State {
-    if (this.queue.length || this.d.speaker.active) return "speaking";
+    if (this.queue.length || this.d.speaker.active || Date.now() < this.playbackEndsAt) return "speaking";
     if (this.turn) return "thinking";
     return "listening";
   }
@@ -123,6 +141,13 @@ export class Conversation {
     this.tryAnnounce();
   }
 
+  /** Greet Tor Martin at start-up, in character and aware of the time of day. */
+  greet(now = new Date()): void {
+    const time = now.toLocaleTimeString("nb-NO", { hour: "2-digit", minute: "2-digit" });
+    const day = now.toLocaleDateString("nb-NO", { weekday: "long" });
+    this.announce(`[Oppstart] Klokka er ${time} på en ${day}. Hils kort på Tor Martin i én setning, gjerne med en lun kommentar om tidspunktet. Ikke ramse opp hva du kan.`);
+  }
+
   private announcePending = false;
   private announceTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -152,7 +177,8 @@ export class Conversation {
       case "start":
         this.session = this.d.stt.open();
         this.session?.write(e.audio);
-        this.bargeSince = this.state !== "listening" ? Date.now() : 0;
+        // On speakers the mic hears the reply itself, so only a transcript may cut it (see onUtterance).
+        this.bargeSince = this.d.audioMode === "headset" && this.state !== "listening" ? Date.now() : 0;
         return;
       case "audio":
         this.session?.write(e.audio);
@@ -185,6 +211,20 @@ export class Conversation {
   private onUtterance(text: string): void {
     debugLog(debugText("stt", text));
     if (!text) return;
+    // While the assistant talks (or just after), ignore its own echo and simple acknowledgements.
+    const now = Date.now();
+    // Echo can reach the transcript up to a few seconds after the last sound (VAD end + STT).
+    if (this.state === "speaking" || now < this.playbackEndsAt + 4000) {
+      const spoken = this.recentSpoken.filter((s) => now - s.at < 30_000).map((s) => s.text);
+      if (isEcho(text, spoken)) {
+        debugLog("echo of own voice ignored");
+        return;
+      }
+      if (isBackchannel(text)) {
+        debugLog("backchannel ignored");
+        return;
+      }
+    }
     if (this.pending) {
       clearTimeout(this.pending.timer);
       text = `${this.pending.text} ${text}`;
@@ -228,6 +268,9 @@ export class Conversation {
     const ctl = new AbortController();
     const gen = this.generation;
     this.turn = ctl;
+    this.replyBefore = this.replyNow;
+    this.replyNow = "";
+    this.d.onUserTurn?.(text ?? "", this.replyBefore);
     const splitter = new SentenceSplitter();
     const say = (sentence: string) => this.enqueue(sentence, ctl, gen);
 
@@ -260,13 +303,27 @@ export class Conversation {
 
   /** Start synthesizing a sentence now (prefetch) and queue it for in-order playback. */
   private enqueue(sentence: string, ctl: AbortController, gen: number): void {
-    const clean = toSpeech(sentence);
-    if (!clean || ctl.signal.aborted || gen !== this.generation) return;
+    if (ctl.signal.aborted || gen !== this.generation) return;
+    let clean = sanitizeTags(toSpeech(sentence));
+    const spokenWords = stripTags(clean);
+    if (!spokenWords) {
+      // A tag on its own ("[laughs]") belongs to the next sentence.
+      this.carryTags = sanitizeTags(`${this.carryTags} ${clean}`);
+      return;
+    }
+    if (this.carryTags) {
+      clean = sanitizeTags(`${this.carryTags} ${clean}`);
+      this.carryTags = "";
+    }
+    debugLog(debugText("say", clean));
+    this.replyNow = `${this.replyNow} ${spokenWords}`.trim();
+    this.recentSpoken.push({ text: spokenWords, at: Date.now() });
+    if (this.recentSpoken.length > 12) this.recentSpoken.shift();
     const stream = new ChunkStream();
     const t = this.d.tts;
     void (async () => {
       try {
-        for await (const chunk of synthesize(clean, { apiKey: t.apiKey, voice: t.voice, model: t.model, signal: ctl.signal })) {
+        for await (const chunk of (this.d.synth ?? synthesize)(clean, { apiKey: t.apiKey, voice: t.voice, model: t.model, signal: ctl.signal })) {
           stream.push(chunk);
         }
         stream.end();
@@ -295,6 +352,9 @@ export class Conversation {
               this.endedAt = 0; // measure only replies to speech, not later announcements
             }
             this.d.speaker.write(chunk);
+            // 24 kHz mono s16le = 48 bytes per millisecond of sound.
+            this.playbackEndsAt = Math.max(this.playbackEndsAt, Date.now()) + chunk.length / 48;
+            this.d.onAudioOut?.(chunk);
           }
         }
       })
@@ -317,7 +377,9 @@ export class Conversation {
     this.turn?.abort();
     this.turn = null;
     this.queue = [];
+    this.carryTags = "";
     this.d.speaker.stop();
+    this.playbackEndsAt = 0;
     if (wasBusy && reason !== "shutdown") this.d.brain.note("Du ble avbrutt. Resten av forrige svar ble ikke hørt.");
     debugLog(`interrupt: ${reason}`);
   }

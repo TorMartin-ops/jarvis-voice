@@ -9,8 +9,9 @@
     "build": "npx tsc",
     "start": "node dist/index.js",
     "devices": "node dist/index.js --devices",
-    "test": "npm run build && node test/jarvis.mjs",
-    "e2e": "npm run build && node test/e2e.mjs"
+    "test": "npm run build && node test/jarvis.mjs && node test/conversation.mjs",
+    "e2e": "npm run build && node test/e2e.mjs",
+    "test:tags": "npm run build && node test/tags.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",

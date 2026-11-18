@@ -11,7 +11,35 @@ export interface ToolDeps {
     add(text: string): boolean;
     forget(phrase: string): number;
   };
+  /** What Tor Martin said in the current turn ("" for turns he did not start, such as task reports). */
+  lastUserText: () => string;
+  /** What the assistant said in the turn before this one. */
+  previousReply: () => string;
   log?: (msg: string) => void;
+}
+
+/**
+ * True when the utterance is an explicit go-ahead for an outward action, such as "ja, send",
+ * "send den", "ja, gjør det" or "kjør på". A bare "ja" is not enough, and any "nei", "ikke",
+ * "vent" or "stopp" cancels. Enforced in code because the model cannot be trusted to wait.
+ */
+export function isConfirmation(text: string): boolean {
+  const t = text.toLowerCase().replace(/[^\p{L}\s]/gu, " ").replace(/\s+/g, " ").trim();
+  if (!t || /\b(nei|ikke|vent|stopp|avbryt|glem det)\b/.test(t)) return false;
+  // "sen"/"senn" covers the common transcription of a quickly spoken "send".
+  return /\b(send|sende|sen|senn|gjør det|kjør på|kjør|bekrefter|bekreftet|godkjent|godkjenner|publiser|slett)\b/.test(t);
+}
+
+/**
+ * The code-level gate for confirmed_action. All three must hold:
+ * 1. the previous reply asked for confirmation (so the action was read back first),
+ * 2. this utterance is an explicit go-ahead, and
+ * 3. it is short, so the request itself ("send en e-post til ...") can never count as its own confirmation.
+ */
+export function confirmationGate(userText: string, previousReply: string): boolean {
+  const asked = /ja, send|«ja|bekreft|gjør det\?|skal jeg sende|skal jeg gjøre/i.test(previousReply);
+  const short = userText.trim().split(/\s+/).filter(Boolean).length <= 6;
+  return asked && short && isConfirmation(userText);
 }
 
 const STATUS_NO: Record<TaskInfo["status"], string> = {
@@ -32,6 +60,10 @@ export function runLunaTool(deps: ToolDeps, name: string, args: Record<string, u
       const description = str("description");
       if (!description) return "ERROR: description is required.";
       const confirmed = str("confirmed_action") || undefined;
+      if (confirmed && !confirmationGate(deps.lastUserText(), deps.previousReply())) {
+        deps.log?.(`blocked: confirmed_action without a spoken confirmation ("${title}")`);
+        return "BLOCKED: confirmed_action is only accepted right after Tor Martin says something like «ja, send» or «ja, gjør det». No task was started. Read back exactly what will happen, ask him, and wait for his answer.";
+      }
       const task = deps.tasks.start(title, description, confirmed);
       deps.log?.(`task ${task.id} started: ${title}${confirmed ? " (with confirmed action)" : ""}`);
       return `Started task ${task.id} ("${title}"). It runs in the background; the result arrives as [Oppgave ferdig].`;

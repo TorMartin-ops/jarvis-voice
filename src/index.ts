@@ -17,8 +17,15 @@ function log(msg: string): void {
 }
 
 /** Build the whole assistant. Exported so the end-to-end test can drive it without a microphone. */
-export async function createAssistant(cfg: Config, logFn: (m: string) => void = log) {
+export async function createAssistant(
+  cfg: Config,
+  logFn: (m: string) => void = log,
+  extra: { onAudioOut?: (pcm: Buffer) => void } = {},
+) {
   const memory = new Memory(join(cfg.dataDir, "memory.json"));
+  // What Tor Martin said this turn; the confirmation gate checks it before any outward action.
+  let lastUserText = "";
+  let previousReply = "";
   let conversation: Conversation | null = null;
 
   const tasks = new TaskManager({
@@ -38,8 +45,13 @@ export async function createAssistant(cfg: Config, logFn: (m: string) => void = 
     apiKey: cfg.azure.key,
     deployment: cfg.azure.deployment,
     apiVersion: cfg.azure.apiVersion,
-    context: () => memory.render(),
-    runTool: (name, args) => runLunaTool({ tasks, memory, log: logFn }, name, args),
+    // The model has no clock: give it the real time and date every turn, plus long-term memory.
+    context: () => {
+      const now = new Date();
+      const when = now.toLocaleString("nb-NO", { weekday: "long", day: "numeric", month: "long", year: "numeric", hour: "2-digit", minute: "2-digit" });
+      return [`Nå er det ${when} (Norge).`, memory.render()].filter(Boolean).join("\n\n");
+    },
+    runTool: (name, args) => runLunaTool({ tasks, memory, lastUserText: () => lastUserText, previousReply: () => previousReply, log: logFn }, name, args),
   });
 
   conversation = new Conversation({
@@ -51,6 +63,12 @@ export async function createAssistant(cfg: Config, logFn: (m: string) => void = 
     tts: { apiKey: cfg.elevenKey, voice: cfg.ttsVoice, model: cfg.ttsModel },
     bargeInMs: cfg.bargeInMs,
     mergeMs: cfg.mergeMs,
+    audioMode: cfg.audioMode,
+    onAudioOut: extra.onAudioOut,
+    onUserTurn: (text, before) => {
+      lastUserText = text;
+      previousReply = before;
+    },
     log: logFn,
   });
 
@@ -96,7 +114,8 @@ async function main(): Promise<void> {
     (pcm) => conversation.onMic(pcm),
     (msg) => log(`microphone: ${msg}`),
   );
-  log(`listening on "${cfg.micDevice}". Say "${cfg.wakeWords[0] ?? "Jarvis"}" to start.`);
+  log(`listening on "${cfg.micDevice}" (${cfg.audioMode}). Say "${cfg.wakeWords[0] ?? "Jarvis"}" to start.`);
+  conversation.greet();
 }
 
 // Run only when started directly (not when imported by the e2e test).

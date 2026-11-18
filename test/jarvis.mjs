@@ -4,12 +4,13 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const { SentenceSplitter, toSpeech } = await import("../dist/split.js");
+const { SentenceSplitter, toSpeech, sanitizeTags, stripTags } = await import("../dist/split.js");
+const { isEcho, isBackchannel, overlap } = await import("../dist/echo.js");
 const { WakeGate } = await import("../dist/gate.js");
 const { isInside, redact } = await import("../dist/policy.js");
 const { parseWorkerEvent, WORKER_DISALLOWED } = await import("../dist/tasks.js");
 const { Memory } = await import("../dist/memory.js");
-const { runLunaTool, finishNote } = await import("../dist/luna-tools.js");
+const { runLunaTool, finishNote, isConfirmation, confirmationGate } = await import("../dist/luna-tools.js");
 const { parseSseLine } = await import("../dist/brain.js");
 const { loadConfig, loadDotEnv, ConfigError } = await import("../dist/config.js");
 
@@ -91,6 +92,8 @@ t("Luna's tools: start, list, cancel, remember, forget", () => {
       cancel: (id) => id === "t1",
     },
     memory: { add: (x) => x === "kaffe uten melk", forget: (p) => (p === "kaffe" ? 1 : 0) },
+    lastUserText: () => "",
+    previousReply: () => "",
   };
   assert.match(runLunaTool(deps, "start_task", { title: "Test", description: "Gjør noe" }), /Started task t1/);
   assert.equal(started[0].confirmedAction, undefined);
@@ -157,6 +160,53 @@ t("config: .env loads without overriding real environment", () => {
   loadDotEnv(file, env);
   assert.equal(env.A_KEY, "from-file");
   assert.equal(env.KEEP, "real");
+});
+
+// ---- confirmation gate for outward actions ----------------------------------------
+t("confirmation: explicit go-aheads pass, vague or negative answers do not", () => {
+  for (const yes of ["Ja, send.", "send den", "Ja, gjør det", "kjør på", "bekreftet", "Ja, sen."]) assert.equal(isConfirmation(yes), true, yes);
+  for (const no of ["ja", "ok", "nei, ikke send", "vent litt", "stopp"]) assert.equal(isConfirmation(no), false, no);
+});
+t("confirmation gate: the request itself, a vague yes, or a report turn never confirm", () => {
+  const asked = "Jeg sender «Møtet er flyttet» til a@b.no. Si «ja, send» for å bekrefte.";
+  assert.equal(confirmationGate("Ja, send.", asked), true);
+  assert.equal(confirmationGate("send en e-post til a@b.no og si at møtet er flyttet", ""), false, "request in the same turn");
+  assert.equal(confirmationGate("Ja, send.", "Det er gjort."), false, "nothing was read back first");
+  assert.equal(confirmationGate("ja", asked), false, "a bare yes is not enough");
+  assert.equal(confirmationGate("", asked), false, "report turns cannot confirm");
+});
+t("start_task with confirmed_action is blocked unless the gate passes", () => {
+  const started = [];
+  const deps = (said, before) => ({
+    tasks: { start: (t, d, c) => (started.push(c), { id: "t9", title: t, description: d, status: "running", startedAt: "", progress: "", steps: 0 }), list: () => [], cancel: () => false },
+    memory: { add: () => true, forget: () => 0 },
+    lastUserText: () => said,
+    previousReply: () => before,
+  });
+  const args = { title: "Send e-post", description: "Send møteendring", confirmed_action: "Send til a@b.no: Møtet er flyttet." };
+  assert.match(runLunaTool(deps("send en e-post til a@b.no om møtet", ""), "start_task", args), /BLOCKED/);
+  assert.equal(started.length, 0);
+  assert.match(runLunaTool(deps("Ja, send.", "Skal jeg sende den? Si «ja, send»."), "start_task", args), /Started task/);
+  assert.equal(started.length, 1);
+});
+
+// ---- audio tags, echo guard, backchannels ----------------------------------------
+t("tags: supported tags are kept, aliases normalized, unknown tags removed", () => {
+  assert.equal(sanitizeTags("[laughs] Selvsagt."), "[laughs] Selvsagt.");
+  assert.equal(sanitizeTags("[giggles] Ja."), "[laughs] Ja.");
+  assert.equal(sanitizeTags("[dramatic thunder] Hei."), "Hei.");
+  assert.equal(sanitizeTags("[sighs] Nei. [laughs] Jo."), "[sighs] Nei. Jo.");
+  assert.equal(stripTags("[sighs] Det feilet."), "Det feilet.");
+});
+t("echo: the assistant's own sentence heard back is recognized", () => {
+  const spoken = ["Jeg har satt i gang en oppgave som teller filene.", "Det tar et minutt."];
+  assert.equal(isEcho("jeg har satt i gang en oppgave som teller filene", spoken), true);
+  assert.equal(isEcho("Jarvis, stopp, jeg mente noe annet", spoken), false);
+  assert.ok(overlap("det tar et minutt", spoken.join(" ")) === 1);
+});
+t("backchannels are recognized, real requests are not", () => {
+  for (const b of ["mm", "Ja.", "okei, skjønner", "Mhm", "jepp"]) assert.equal(isBackchannel(b), true, b);
+  for (const r of ["ja, send den", "stopp", "hva er klokka"]) assert.equal(isBackchannel(r), false, r);
 });
 
 console.log(`\n${passed} tests passed`);

@@ -15,6 +15,7 @@ export interface Config {
   endSilenceMs?: number;
   bargeInMs: number;
   mergeMs: number;
+  audioMode: "headset" | "speakers";
   taskTimeoutMs: number;
   workerModel?: string;
   dataDir: string;
@@ -81,6 +82,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     endSilenceMs: num(env, "JARVIS_END_SILENCE_MS") ?? 600,
     bargeInMs: num(env, "JARVIS_BARGE_IN_MS") ?? 400,
     mergeMs: num(env, "JARVIS_MERGE_MS") ?? 800,
+    audioMode: str(env, "JARVIS_AUDIO_MODE") === "speakers" ? "speakers" : "headset",
     taskTimeoutMs: num(env, "JARVIS_TASK_TIMEOUT_MS") ?? 30 * 60_000,
     workerModel: str(env, "JARVIS_WORKER_MODEL"),
     dataDir: str(env, "JARVIS_DATA_DIR") ?? join(env.USERPROFILE ?? process.cwd(), ".jarvis"),

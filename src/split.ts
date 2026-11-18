@@ -39,3 +39,35 @@ export function toSpeech(text: string): string {
     .replace(/\s+/g, " ")
     .trim();
 }
+
+/**
+ * ElevenLabs audio tags that eleven_v4 / v4 turbo documents as supported. Anything else in
+ * square brackets is removed, so an invented tag is never read aloud.
+ */
+export const AUDIO_TAGS = new Set([
+  "laughs", "laughs harder", "starts laughing", "sighs", "exhales", "whispers",
+  "curious", "excited", "sarcastic", "mischievously", "short pause", "long pause",
+]);
+const TAG_ALIASES: Record<string, string> = {
+  giggles: "laughs", giggle: "laughs", laugh: "laughs", chuckles: "laughs", chuckle: "laughs",
+  sigh: "sighs", pause: "short pause", whisper: "whispers",
+};
+
+/** Keep supported audio tags (normalized), drop unknown ones. At most `max` tags per sentence. */
+export function sanitizeTags(text: string, max = 1): string {
+  let kept = 0;
+  return text
+    .replace(/\[([^\]]{1,30})\]/g, (_m, raw: string) => {
+      const tag = TAG_ALIASES[raw.trim().toLowerCase()] ?? raw.trim().toLowerCase();
+      if (!AUDIO_TAGS.has(tag) || kept >= max) return " ";
+      kept++;
+      return `[${tag}]`;
+    })
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** The sentence without audio tags (what will actually be heard as words). */
+export function stripTags(text: string): string {
+  return text.replace(/\[[^\]]*\]/g, " ").replace(/\s+/g, " ").trim();
+}

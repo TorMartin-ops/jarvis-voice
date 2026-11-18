@@ -5,6 +5,18 @@ A local voice assistant for Windows. You talk through the PC microphone and it a
 - **Luna talks.** An Azure OpenAI chat model (for example `gpt-6-luna`) handles the conversation only. It answers in one or two short sentences, streamed sentence by sentence to speech.
 - **Claude Code works.** Anything that needs files, code, the web, email or more than a quick answer becomes a task. Each task runs in its own headless Claude Code session in the background. When it finishes, Luna tells you the result.
 
+## Personality
+
+Jarvis is calm, sharp and loyal, with dry, warm humour: a capable butler who is also a good colleague. It greets you at start-up with a remark about the time of day, varies its wording, and knows the real date and time on every turn.
+
+It uses ElevenLabs audio tags sparingly (at most one per reply): `[laughs]`, `[sighs]`, `[exhales]`, `[whispers]`, `[curious]`, `[excited]`, `[sarcastic]`, `[mischievously]`, `[short pause]`. Unknown tags are removed before speech, aliases such as `[giggles]` become `[laughs]`, and a tag sent on its own is moved to the next sentence. `npm run test:tags` checks every allowed tag against the live TTS and STT: each is performed, none is read aloud.
+
+## Listening on speakers or a headset
+
+- `JARVIS_AUDIO_MODE=headset` (default): talking over a reply for 400 ms cuts it off at once.
+- `JARVIS_AUDIO_MODE=speakers`: the microphone hears the reply, so a software echo guard compares what it hears with what Jarvis just said and ignores its own voice. Only a real request cuts the reply.
+- In both modes, acknowledgements such as "mm", "ja" or "okei" while Jarvis talks are ignored instead of interrupting.
+
 ## How a turn works
 
 1. ffmpeg captures the microphone (16 kHz mono).
@@ -20,7 +32,7 @@ Measured on this setup: Luna's first token about 0.5 s, end of speech to first a
 ## Tasks
 
 - Workers run `claude -p` in `auto` permission mode with a deny list (git push, recursive delete, sending mail, registry and user changes, shutdown, npm publish).
-- Outward or irreversible actions are allowed only when you confirmed them out loud. Luna reads back exactly what will happen, waits for "ja, send" or "ja, gjør det", and passes the confirmed action to the worker. Workers refuse anything else and report what they would have done.
+- Outward or irreversible actions need your spoken confirmation, enforced in code, not only in the prompt. Luna reads back exactly what will happen; a confirmed action is accepted only if the previous reply asked for confirmation and your answer is a short, explicit go-ahead ("ja, send", "ja, gjør det", "kjør på"). The request itself, a bare "ja", or a task report can never confirm. Workers refuse anything else and report what they would have done. (Testing found the model confirming on its own behalf, which is why this check exists.)
 - Workers treat text from web pages, email and files as data, not instructions.
 - Tasks are saved in `~/.jarvis/tasks.json` with progress, deadline (30 min default) and final status. A task left running by a crash is marked `lost` on the next start. Full reports go to `~/.jarvis/reports/`.
 
@@ -43,6 +55,12 @@ npm start
 Use a headset for now. Without one, the speakers reach the microphone and the assistant can interrupt itself.
 
 `npm run e2e -- "Jarvis, hva er klokka?"` sends one spoken request through the whole chain. Add `--task` to wait for a delegated task and Luna's report. It uses API credits.
+
+## Tests
+
+- `npm test`: 25 unit tests and 5 conversation tests with fake services (echo guard, backchannels, barge-in, tag carry-over, announcements), no network.
+- `npm run test:tags`: every audio tag against live ElevenLabs TTS and STT.
+- `npm run e2e -- "Jarvis, ... | ja, send" --dry-tasks`: spoken multi-turn test through the whole chain. Flags: `--task`, `--echo` (own audio fed back into the mic), `--greet`, `--dry-tasks`.
 
 ## Keys and privacy
 

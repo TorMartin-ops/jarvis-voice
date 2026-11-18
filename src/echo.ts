@@ -40,6 +40,13 @@ export function isEcho(heard: string, recentlySpoken: string[], threshold = 0.6)
   return overlap(heard, spoken) >= threshold;
 }
 
+const STOP_COMMANDS = new Set(["stopp", "stop", "hysj", "stille", "ti stille", "slutt", "det holder", "nok", "pause"]);
+
+/** True when the whole utterance only tells the assistant to be quiet ("stopp", "hysj", "ti stille"). */
+export function isStopCommand(text: string): boolean {
+  return STOP_COMMANDS.has([...new Set(words(text))].join(" "));
+}
+
 /** True when the whole utterance is an acknowledgement such as "mm", "ja ja" or "okei, skjønner". */
 export function isBackchannel(text: string): boolean {
   const w = words(text);

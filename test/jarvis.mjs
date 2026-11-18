@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const { SentenceSplitter, toSpeech, sanitizeTags, stripTags } = await import("../dist/split.js");
-const { isEcho, isBackchannel, overlap } = await import("../dist/echo.js");
+const { isEcho, isBackchannel, isStopCommand, overlap } = await import("../dist/echo.js");
 const { WakeGate } = await import("../dist/gate.js");
 const { isInside, redact } = await import("../dist/policy.js");
 const { parseWorkerEvent, WORKER_DISALLOWED } = await import("../dist/tasks.js");
@@ -70,6 +70,12 @@ t("gate: strip removes the wake word and keeps the request", () => {
 });
 t("gate: no words configured means everything is admitted", () => {
   assert.equal(new WakeGate([], 1000).admit("alt"), true);
+});
+t("gate: names lists the wake words said, so the assistant's own can be told apart", () => {
+  const g = new WakeGate(["jarvis", "claude"], 1000, () => 0);
+  assert.deepEqual(g.names("Jarvis, be Claude se på det"), ["jarvis", "claude"]);
+  assert.deepEqual(g.names("hva er klokka"), []);
+  assert.deepEqual(new WakeGate([], 1000).names("Jarvis"), []);
 });
 
 // ---- workers, Luna's tools, memory ------------------------------------------
@@ -150,6 +156,9 @@ t("config: defaults and parsing", () => {
   assert.equal(cfg.bargeInMs, 400);
   assert.equal(cfg.wakeWindowMs, 90000);
   assert.equal(cfg.taskTimeoutMs, 1800000);
+  const base = { ELEVENLABS_API_KEY: "e", AZURE_OPENAI_ENDPOINT: "x", AZURE_OPENAI_API_KEY: "k", AZURE_OPENAI_DEPLOYMENT: "d", JARVIS_MIC: "m" };
+  assert.equal(loadConfig({ ...base, JARVIS_AUDIO_MODE: "speakers" }).wakeWindowMs, 30000, "speakers default to a shorter window");
+  assert.equal(loadConfig({ ...base, JARVIS_AUDIO_MODE: "speakers", JARVIS_WAKE_WINDOW_MS: "60000" }).wakeWindowMs, 60000);
   assert.ok(cfg.wakeWords.includes("luna"));
   assert.throws(() => loadConfig({ ...process.env, ELEVENLABS_API_KEY: "e", JARVIS_BARGE_IN_MS: "-1", AZURE_OPENAI_ENDPOINT: "x", AZURE_OPENAI_API_KEY: "k", AZURE_OPENAI_DEPLOYMENT: "d", JARVIS_MIC: "m" }), ConfigError);
 });
@@ -208,6 +217,10 @@ t("echo: the assistant's own sentence heard back is recognized", () => {
 t("backchannels are recognized, real requests are not", () => {
   for (const b of ["mm", "Ja.", "okei, skjønner", "Mhm", "jepp"]) assert.equal(isBackchannel(b), true, b);
   for (const r of ["ja, send den", "stopp", "hva er klokka"]) assert.equal(isBackchannel(r), false, r);
+});
+t("stop commands are recognized, requests that start with stop are not", () => {
+  for (const s of ["stopp", "Stopp!", "stopp, stopp", "Hysj.", "ti stille", "det holder"]) assert.equal(isStopCommand(s), true, s);
+  for (const r of ["stopp, hva er klokka?", "stopp oppgaven", "", "ja"]) assert.equal(isStopCommand(r), false, r);
 });
 
 // ---- turn policy after tools ------------------------------------------------------

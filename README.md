@@ -14,8 +14,9 @@ It uses ElevenLabs audio tags sparingly (at most one per reply): `[laughs]`, `[s
 ## Listening on speakers or a headset
 
 - `JARVIS_AUDIO_MODE=headset` (default): talking over a reply for 400 ms cuts it off at once.
-- `JARVIS_AUDIO_MODE=speakers`: the microphone hears the reply, so a software echo guard compares what it hears with what Jarvis just said and ignores its own voice. Only a real request cuts the reply.
-- In both modes, acknowledgements such as "mm", "ja" or "okei" while Jarvis talks are ignored instead of interrupting.
+- `JARVIS_AUDIO_MODE=speakers`: the microphone hears the reply, and an echo that speech-to-text mishears gets past a text comparison. So the mode is half duplex: while Jarvis talks, and for 0.6 s after, only its name gets through ("Jarvis, stopp", "Jarvis, hva er klokka?"), and not when the name came from Jarvis's own reply. Speech that runs on past the end of the reply is cut there, so an answer right after it still counts. The conversation window is 30 s instead of 90 s, since speakers usually mean a room with other people.
+- In both modes, acknowledgements such as "mm", "ja" or "okei" while Jarvis talks are ignored instead of interrupting, and a bare "stopp", "hysj" or "ti stille" silences the reply without starting a new turn.
+- The window opens only when someone names the assistant. The start-up greeting and task reports do not open it.
 
 ## How a turn works
 
@@ -25,7 +26,7 @@ It uses ElevenLabs audio tags sparingly (at most one per reply): `[laughs]`, `[s
 4. A wake-word gate decides whether the text is for the assistant. Saying "Jarvis" or "Luna" opens a conversation window.
 5. Luna streams the answer. It can start, list and cancel tasks, and remember or forget facts. When a tool needs no answer (a task started, a fact saved), the turn ends without another model call, and a short acknowledgement is spoken at once if Luna had not said anything yet.
 6. Each finished sentence goes to ElevenLabs TTS at once and plays through ffplay in order. The next sentence is synthesized while the current one plays.
-7. Talking over the reply for `JARVIS_BARGE_IN_MS` cancels it at once. Luna is told that the rest was not heard.
+7. With a headset, talking over the reply for `JARVIS_BARGE_IN_MS` cancels it at once. On speakers, saying the name does. Luna is told that the rest was not heard.
 
 Measured on this setup: Luna's first token about 0.5 s, end of speech to first audio about 1.0 s for a plain answer.
 
@@ -76,7 +77,7 @@ Use a headset if you can. On a laptop's built-in speakers and microphone, set `J
 
 ## Tests
 
-- `npm test`: 33 unit tests and 8 conversation tests with fake services (echo guard, backchannels, barge-in, tag carry-over, announcements, the turn policy after tool calls against a fake Azure stream), no network.
+- `npm test`: 35 unit tests and 16 conversation tests with fake services (echo guard, backchannels, barge-in, half duplex on speakers, stop commands, tag carry-over, announcements, the turn policy after tool calls and the connection retry against a fake Azure stream), no network.
 - `npm run test:tags`: every audio tag against live ElevenLabs TTS and STT.
 - `npm run e2e -- "Jarvis, ... | ja, send" --dry-tasks`: spoken multi-turn test through the whole chain. Flags: `--task`, `--echo` (own audio fed back into the mic), `--greet`, `--dry-tasks`.
 

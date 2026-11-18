@@ -5,7 +5,7 @@ import type { Speaker } from "./speaker.js";
 import type { WakeGate } from "./gate.js";
 import { synthesize } from "./tts.js";
 import { SentenceSplitter, toSpeech, sanitizeTags, stripTags } from "./split.js";
-import { isEcho, isBackchannel } from "./echo.js";
+import { isEcho, isBackchannel, isStopCommand } from "./echo.js";
 import { debugLog, debugText, timing } from "./debug.js";
 import { redact } from "./policy.js";
 
@@ -14,12 +14,20 @@ import { redact } from "./policy.js";
  * streaming -> TTS -> speaker. Owns barge-in, cancellation and ordering.
  *
  * States: listening (idle), thinking (brain running, nothing audible yet), speaking (audio out).
- * Barge-in: speech that lasts `bargeInMs` while the assistant is busy cancels the reply at once.
+ * Barge-in (headset): speech that lasts `bargeInMs` while the assistant is busy cancels the reply at once.
+ * Half duplex (speakers): the mic hears the reply, and a misheard echo slips past the text-based
+ * echo guard, so while the assistant is audible (and ECHO_TAIL_MS after) only its name, said by
+ * someone other than itself, gets through. Speech that runs on past the reply is cut where the
+ * reply ended, and the rest is handled as a fresh utterance.
+ * A bare stop command ("stopp", "hysj") silences the reply without starting a new turn.
  * Chunks from a cancelled reply are never played (generation counter).
  * Utterances that end mid-sentence, or that only say the wake word, wait `mergeMs`
  * for the rest of the request.
  */
 export type State = "listening" | "thinking" | "speaking";
+
+/** How long after the last audible reply the mic may still hear it (player and device buffers, room). */
+export const ECHO_TAIL_MS = 600;
 
 export interface ConversationDeps {
   buffer: SpeechBuffer;
@@ -105,8 +113,25 @@ export class Conversation {
   /** Words spoken in the current turn, and in the turn before (for the confirmation gate). */
   private replyNow = "";
   private replyBefore = "";
+  /** Last time the assistant was seen speaking, for the half-duplex tail. */
+  private speakingSeenAt = 0;
+  /** The open STT session began (or ran) while the reply was audible. */
+  private sessionOverlaps = false;
 
   constructor(private readonly d: ConversationDeps) {}
+
+  private get halfDuplex(): boolean {
+    return this.d.audioMode === "speakers";
+  }
+
+  /** True while the reply is audible, and for ECHO_TAIL_MS after, when the mic may still hear it. */
+  private replyAudible(now = Date.now()): boolean {
+    if (this.state === "speaking") {
+      this.speakingSeenAt = now;
+      return true;
+    }
+    return now - this.speakingSeenAt < ECHO_TAIL_MS;
+  }
 
   get state(): State {
     if (this.queue.length || this.d.speaker.active || Date.now() < this.playbackEndsAt) return "speaking";
@@ -169,6 +194,7 @@ export class Conversation {
   // ---- microphone events -------------------------------------------------
 
   private async process(pcm: Buffer): Promise<void> {
+    this.replyAudible(); // keeps the half-duplex tail measured from the real end of the reply
     for (const e of await this.d.buffer.feed(pcm)) this.onSpeech(e);
   }
 
@@ -177,10 +203,19 @@ export class Conversation {
       case "start":
         this.session = this.d.stt.open();
         this.session?.write(e.audio);
+        this.sessionOverlaps = this.halfDuplex && this.replyAudible();
         // On speakers the mic hears the reply itself, so only a transcript may cut it (see onUtterance).
         this.bargeSince = this.d.audioMode === "headset" && this.state !== "listening" ? Date.now() : 0;
         return;
       case "audio":
+        if (this.sessionOverlaps && !this.replyAudible()) {
+          // The reply has ended but the speech goes on: drop what was heard over the reply (mostly
+          // its echo) and transcribe the rest on its own, so an answer right after the reply counts.
+          this.session?.cancel();
+          this.session = this.d.stt.open();
+          this.sessionOverlaps = false;
+          debugLog("half duplex: dropped the speech heard during the reply");
+        }
         this.session?.write(e.audio);
         if (this.bargeSince && e.speech && Date.now() - this.bargeSince >= this.d.bargeInMs) {
           this.bargeSince = 0;
@@ -191,6 +226,8 @@ export class Conversation {
       case "end": {
         this.bargeSince = 0;
         this.endedAt = Date.now();
+        const overlapped = this.sessionOverlaps || (this.halfDuplex && this.replyAudible());
+        this.sessionOverlaps = false;
         const session = this.session;
         this.session = null;
         if (e.discard || !session) {
@@ -199,7 +236,7 @@ export class Conversation {
         }
         session
           .commit()
-          .then((text) => this.onUtterance(text.trim()))
+          .then((text) => this.onUtterance(text.trim(), overlapped))
           .catch((err) => this.d.log(`transcription failed: ${redact((err as Error).message)}`));
         return;
       }
@@ -208,14 +245,18 @@ export class Conversation {
 
   // ---- utterances and turns ---------------------------------------------
 
-  private onUtterance(text: string): void {
+  /**
+   * A finished transcript. `overlapped`: the speech was heard while the reply was audible (speakers
+   * only). Direct callers (tests) get it from the current state.
+   */
+  private onUtterance(text: string, overlapped = this.halfDuplex && this.replyAudible()): void {
     debugLog(debugText("stt", text));
     if (!text) return;
     // While the assistant talks (or just after), ignore its own echo and simple acknowledgements.
     const now = Date.now();
+    const spoken = this.recentSpoken.filter((s) => now - s.at < 30_000).map((s) => s.text);
     // Echo can reach the transcript up to a few seconds after the last sound (VAD end + STT).
-    if (this.state === "speaking" || now < this.playbackEndsAt + 4000) {
-      const spoken = this.recentSpoken.filter((s) => now - s.at < 30_000).map((s) => s.text);
+    if (overlapped || this.state === "speaking" || now < this.playbackEndsAt + 4000) {
       if (isEcho(text, spoken)) {
         debugLog("echo of own voice ignored");
         return;
@@ -224,6 +265,16 @@ export class Conversation {
         debugLog("backchannel ignored");
         return;
       }
+    }
+    if (overlapped) {
+      // Half duplex: over the reply only the assistant's name gets through, and not when the
+      // name is in what it just said itself (its own "Claude" or "Jarvis" coming back).
+      const own = new Set(this.d.gate.names(spoken.join(" ")));
+      if (!this.d.gate.names(text).some((n) => !own.has(n))) {
+        debugLog("half duplex: speech during the reply ignored");
+        return;
+      }
+      if (this.state !== "listening") this.interrupt("name said during the reply");
     }
     if (this.pending) {
       clearTimeout(this.pending.timer);
@@ -236,6 +287,11 @@ export class Conversation {
       return;
     }
     const command = this.d.gate.strip(text);
+    if (isStopCommand(command)) {
+      if (this.state !== "listening") this.interrupt("stop command");
+      this.d.log("stopped");
+      return;
+    }
     // Very short pieces ("Hei.") are usually the start of a longer request, even with a full stop.
     const words = command.split(/\s+/).filter(Boolean).length;
     const unfinished = words <= 2 || !/[.!?…]$/.test(command);
@@ -288,7 +344,9 @@ export class Conversation {
       .then(() => {
         if (ctl.signal.aborted || gen !== this.generation) return;
         for (const s of splitter.flush()) say(s);
-        this.d.gate.extend();
+        // A reply keeps an open conversation going, but a greeting or task report does not open
+        // the window on its own: then the room's talk would reach Luna without anyone naming her.
+        if (this.d.gate.open) this.d.gate.extend();
       })
       .catch((err) => {
         if (ctl.signal.aborted || gen !== this.generation) return;

@@ -82,6 +82,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, platform: NodeJ
     throw new ConfigError(`Missing settings in .env: ${missing.join(", ")}. Run "npm run devices" to find JARVIS_MIC.`);
   }
   const wake = str(env, "JARVIS_WAKE_WORDS");
+  const audioMode = str(env, "JARVIS_AUDIO_MODE") === "speakers" ? "speakers" : "headset";
   return {
     elevenKey,
     sttModel: str(env, "ELEVENLABS_STT_MODEL"),
@@ -91,12 +92,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, platform: NodeJ
     azure,
     micDevice,
     wakeWords: wake === undefined ? ["jarvis", "luna", "claude", "klaude", "klod", "clod", "cloud", "claud"] : wake.split(",").map((w) => w.trim().toLowerCase()).filter(Boolean),
-    wakeWindowMs: num(env, "JARVIS_WAKE_WINDOW_MS") ?? 90_000,
+    // Speakers usually means a shared room: a shorter window lets less of other people's talk through.
+    wakeWindowMs: num(env, "JARVIS_WAKE_WINDOW_MS") ?? (audioMode === "speakers" ? 30_000 : 90_000),
     // 600 ms: research puts natural end-of-turn waits at 0.6 to 0.8 s; shorter values cut people off.
     endSilenceMs: num(env, "JARVIS_END_SILENCE_MS") ?? 600,
     bargeInMs: num(env, "JARVIS_BARGE_IN_MS") ?? 400,
     mergeMs: num(env, "JARVIS_MERGE_MS") ?? 800,
-    audioMode: str(env, "JARVIS_AUDIO_MODE") === "speakers" ? "speakers" : "headset",
+    audioMode,
     taskTimeoutMs: num(env, "JARVIS_TASK_TIMEOUT_MS") ?? 30 * 60_000,
     workerModel: str(env, "JARVIS_WORKER_MODEL"),
     dataDir: str(env, "JARVIS_DATA_DIR") ?? join(home, ".jarvis"),

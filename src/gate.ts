@@ -33,6 +33,12 @@ export class WakeGate {
     return this.re !== null && this.re.test(text);
   }
 
+  /** The wake words in the text, lowercased, in order. */
+  names(text: string): string[] {
+    if (!this.re) return [];
+    return [...text.matchAll(new RegExp(this.re.source, "giu"))].map((m) => m[2].toLowerCase());
+  }
+
   /** The text with the wake words removed, trimmed of stray punctuation. Empty when only the name was said. */
   strip(text: string): string {
     if (!this.re) return text.trim();
@@ -44,7 +50,7 @@ export class WakeGate {
       .trim();
   }
 
-  /** Keep the window open. Called when the assistant speaks, so a live conversation does not time out. */
+  /** Keep the window open. Called on each addressed utterance and after a reply, so a live conversation does not time out. */
   extend(): void {
     if (this.re) this.until = this.now() + this.windowMs;
   }

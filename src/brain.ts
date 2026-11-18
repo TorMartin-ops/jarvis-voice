@@ -111,6 +111,30 @@ export function parseSseLine(line: string): any | null {
   }
 }
 
+export const CONNECT_RETRY_DELAY_MS = 250;
+
+/**
+ * fetch, tried once more after a short pause when the connection itself fails ("fetch failed":
+ * a reset or stale pooled socket, a DNS hiccup). Nothing has been received at that point, so the
+ * retry cannot repeat speech. HTTP errors and aborts are not retried. The final error names the cause.
+ */
+export async function fetchRetryingConnection(url: string, init: RequestInit): Promise<Response> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fetch(url, init);
+    } catch (err) {
+      // undici reports connection failures as TypeError("fetch failed") with the reason in `cause`.
+      if (!(err instanceof TypeError) || init.signal?.aborted) throw err;
+      const c = (err as TypeError & { cause?: { code?: string; message?: string } }).cause;
+      const why = [c?.code, c?.message].filter(Boolean).join(" ") || "no cause given";
+      if (attempt >= 1) throw new Error(`${err.message} twice (${why})`);
+      debugLog(`LLM connection failed (${why}); trying once more`);
+      await new Promise((r) => setTimeout(r, CONNECT_RETRY_DELAY_MS));
+      if (init.signal?.aborted) throw new DOMException("aborted", "AbortError");
+    }
+  }
+}
+
 export interface BrainOptions {
   endpoint: string;
   apiKey: string;
@@ -190,7 +214,7 @@ export class Brain {
 
   private async streamStep(system: string, hooks: BrainHooks, signal?: AbortSignal) {
     const started = Date.now();
-    const res = await fetch(this.url, {
+    const res = await fetchRetryingConnection(this.url, {
       method: "POST",
       headers: { "api-key": this.opts.apiKey, "content-type": "application/json" },
       body: JSON.stringify({

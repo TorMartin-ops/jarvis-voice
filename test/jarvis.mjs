@@ -45,3 +45,10 @@ t("CLI brain ignores an empty delegation", () => {
 });
 
 console.log(`\n${passed} jarvis tests passed`);
+
+// Azure brain: SSE line parsing.
+const { parseSseLine } = await import("../dist/brain-azure.js");
+assert.equal(parseSseLine("data: [DONE]"), null);
+assert.equal(parseSseLine(": keep-alive"), null);
+assert.deepEqual(parseSseLine('data: {"a":1}'), { a: 1 });
+console.log("ok  azure SSE lines parse");

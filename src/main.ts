@@ -3,8 +3,11 @@ import { homedir } from "os";
 import { join } from "path";
 import { Client, Events, GatewayIntentBits, type VoiceBasedChannel } from "discord.js";
 import { VoicePipeline, type VoicePipelineConfig } from "./voice-pipeline.js";
-import { Brain } from "./brain.js";
+import { Brain, type BrainHooks } from "./brain.js";
 import { CliBrain } from "./brain-cli.js";
+import { AzureBrain } from "./brain-azure.js";
+
+type VoiceBrain = { note(text: string): void; respond(userText: string | null, hooks: BrainHooks, signal?: AbortSignal): Promise<void> };
 import { SentenceSplitter } from "./split.js";
 import { startWorker, type WorkerResult } from "./worker.js";
 
@@ -62,9 +65,23 @@ const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates, GatewayIntentBits.GuildMembers],
 });
 const pipeline = new VoicePipeline(client, config);
-// With an API key the fast streaming brain is used. Without one, each turn runs Claude Code on this PC.
-const brain: Brain | CliBrain = ANTHROPIC_KEY ? new Brain(ANTHROPIC_KEY) : new CliBrain();
-console.error(`jarvis-voice: brain = ${ANTHROPIC_KEY ? 'api' : 'claude-code (no API key)'}`);
+// Brain choice: Azure OpenAI if configured, else Anthropic API, else Claude Code on this PC.
+const AZURE_ENDPOINT = process.env.AZURE_OPENAI_ENDPOINT?.trim();
+const AZURE_KEY = process.env.AZURE_OPENAI_API_KEY?.trim();
+const AZURE_DEPLOYMENT = process.env.AZURE_OPENAI_DEPLOYMENT?.trim();
+let brain: VoiceBrain;
+let brainName: string;
+if (AZURE_ENDPOINT && AZURE_KEY && AZURE_DEPLOYMENT) {
+  brain = new AzureBrain(AZURE_ENDPOINT, AZURE_KEY, AZURE_DEPLOYMENT, process.env.AZURE_OPENAI_API_VERSION?.trim() || undefined);
+  brainName = `azure:${AZURE_DEPLOYMENT}`;
+} else if (ANTHROPIC_KEY) {
+  brain = new Brain(ANTHROPIC_KEY);
+  brainName = "anthropic-api";
+} else {
+  brain = new CliBrain();
+  brainName = "claude-code (no API key)";
+}
+console.error(`jarvis-voice: brain = ${brainName}`);
 
 let current: AbortController | null = null;
 /** Brain turns run one at a time, in arrival order. */

@@ -13,6 +13,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.40.0",
     "@discordjs/voice": "^0.19.2",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "avr-vad": "^1.0.9",
     "discord.js": "^14.14.0",
     "ffmpeg-static": "^5.2.0",

@@ -25,9 +25,18 @@ npm start
 
 Discord bot permissions: View Channel, Connect, Speak, and the Server Members and Voice State intents. Add `Move Members` only if you want the bot to move people.
 
+## Brains
+
+Set the first one whose settings are present in `.env`:
+
+1. **Azure OpenAI** (`AZURE_OPENAI_*`): streamed, with Claude Code's own tools (Bash, Read, Edit, Write, Grep, WebSearch) reached over MCP (`claude mcp serve`). Every tool call is written to `~/.jarvis/audit.log`.
+2. **Anthropic API** (`ANTHROPIC_API_KEY`): streamed, with a `delegate_task` tool that starts a background Claude Code worker.
+3. **Claude Code on this PC** (no key): one `claude -p` per turn. Slower, no streaming.
+
 ## Security
 
 - Keep `.env` out of git. It is listed in `.gitignore`.
+- Tools reached over MCP run with Claude Code's own permissions on this PC. Restrict them with `JARVIS_TOOL_ALLOW`. Write and Edit can change files, so review the audit log.
 - Workers run in `auto` permission mode. The worker prompt forbids sending messages, paying, or deleting unless a task names it explicitly. Review the reports in `~/.jarvis/reports/`.
 - Only users in `VOICE_ALLOWED_USERS` are heard.
 

@@ -1,6 +1,6 @@
 // Tests for the new pieces: sentence splitting and worker result summaries.
 import assert from "node:assert/strict";
-const { SentenceSplitter } = await import("../dist/split.js");
+const { SentenceSplitter, toSpeech } = await import("../dist/split.js");
 const { summarize } = await import("../dist/worker.js");
 const { parseReply } = await import("../dist/brain-cli.js");
 
@@ -44,7 +44,6 @@ t("CLI brain ignores an empty delegation", () => {
   assert.deepEqual(parseReply("DELEGATE:   \nHei").delegations, []);
 });
 
-console.log(`\n${passed} jarvis tests passed`);
 
 // Azure brain: SSE line parsing.
 const { parseSseLine } = await import("../dist/brain-azure.js");
@@ -52,3 +51,11 @@ assert.equal(parseSseLine("data: [DONE]"), null);
 assert.equal(parseSseLine(": keep-alive"), null);
 assert.deepEqual(parseSseLine('data: {"a":1}'), { a: 1 });
 console.log("ok  azure SSE lines parse");
+
+t("markdown is removed before speech", () => {
+  assert.equal(toSpeech("Jeg er i mappen `C:/Users/torma/x`. **Ferdig** nå."), "Jeg er i mappen C:/Users/torma/x. Ferdig nå.");
+  assert.equal(toSpeech("- ett\n- to"), "ett to");
+  assert.equal(toSpeech("[lenke](https://x.no) her"), "lenke her");
+});
+
+console.log(`\n${passed} jarvis tests passed`);

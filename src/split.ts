@@ -27,3 +27,15 @@ export class SentenceSplitter {
     return rest ? [rest] : [];
   }
 }
+
+/** Remove markdown that would be read aloud or distort speech: emphasis, code ticks, headings, bullets, links. */
+export function toSpeech(text: string): string {
+  return text
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/`([^`]*)`/g, "$1")
+    .replace(/(\*\*|__|\*|_)(.+?)\1/g, "$2")
+    .replace(/^\s{0,3}(#{1,6}|[-*+]|\d+\.)\s+/gm, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}

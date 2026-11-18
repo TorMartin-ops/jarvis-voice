@@ -6,9 +6,10 @@ import { VoicePipeline, type VoicePipelineConfig } from "./voice-pipeline.js";
 import { Brain, type BrainHooks } from "./brain.js";
 import { CliBrain } from "./brain-cli.js";
 import { AzureBrain } from "./brain-azure.js";
+import { ClaudeMcp } from "./claude-mcp.js";
 
 type VoiceBrain = { note(text: string): void; respond(userText: string | null, hooks: BrainHooks, signal?: AbortSignal): Promise<void> };
-import { SentenceSplitter } from "./split.js";
+import { SentenceSplitter, toSpeech } from "./split.js";
 import { startWorker, type WorkerResult } from "./worker.js";
 
 /** Load KEY=VALUE lines into process.env without overriding values already set. */
@@ -71,8 +72,9 @@ const AZURE_KEY = process.env.AZURE_OPENAI_API_KEY?.trim();
 const AZURE_DEPLOYMENT = process.env.AZURE_OPENAI_DEPLOYMENT?.trim();
 let brain: VoiceBrain;
 let brainName: string;
+const claudeMcp = new ClaudeMcp();
 if (AZURE_ENDPOINT && AZURE_KEY && AZURE_DEPLOYMENT) {
-  brain = new AzureBrain(AZURE_ENDPOINT, AZURE_KEY, AZURE_DEPLOYMENT, process.env.AZURE_OPENAI_API_VERSION?.trim() || undefined);
+  brain = new AzureBrain(AZURE_ENDPOINT, AZURE_KEY, AZURE_DEPLOYMENT, process.env.AZURE_OPENAI_API_VERSION?.trim() || undefined, claudeMcp);
   brainName = `azure:${AZURE_DEPLOYMENT}`;
 } else if (ANTHROPIC_KEY) {
   brain = new Brain(ANTHROPIC_KEY);
@@ -88,7 +90,8 @@ let current: AbortController | null = null;
 let chain: Promise<void> = Promise.resolve();
 
 function speak(text: string): void {
-  void pipeline.playResponse(text);
+  const clean = toSpeech(text);
+  if (clean) void pipeline.playResponse(clean);
 }
 
 function runTurn(userText: string | null): void {
@@ -141,6 +144,11 @@ client.once(Events.ClientReady, async (ready) => {
   const guild = client.guilds.cache.get(GUILD_ID!) ?? (await client.guilds.fetch(GUILD_ID!));
   const channel = (await guild.channels.fetch(CHANNEL_ID!)) as VoiceBasedChannel | null;
   if (!channel || !channel.isVoiceBased()) fail("JARVIS_CHANNEL_ID is not a voice channel in that guild.");
+  try {
+    await claudeMcp.connect();
+  } catch (err) {
+    console.error(`jarvis-voice: Claude Code MCP unavailable, brain falls back to workers: ${(err as Error).message}`);
+  }
   await pipeline.join(channel as any);
   console.error(`jarvis-voice: joined "${channel.name}"`);
   brain.note("[Samtalen startet. Si hei kort.]");
@@ -148,7 +156,8 @@ client.once(Events.ClientReady, async (ready) => {
 });
 
 client.login(DISCORD_TOKEN!).catch((e) => fail(`Discord login failed: ${e.message}`));
-process.on("SIGINT", () => {
+process.on("SIGINT", async () => {
   pipeline.leave();
+  await claudeMcp.close();
   process.exit(0);
 });

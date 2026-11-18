@@ -7,7 +7,7 @@ const { WakeGate } = await import("../dist/gate.js");
 
 const tick = (ms = 30) => new Promise((r) => setTimeout(r, ms));
 
-function setup(replies, { audioMode = "speakers", audioMs = 1000, stt = { open: () => null, dispose() {} } } = {}) {
+function setup(replies, { audioMode = "speakers", audioMs = 1000, stt = { open: () => null, dispose() {} }, ...extra } = {}) {
   const calls = [];
   const spokenTexts = [];
   const speaker = {
@@ -47,6 +47,7 @@ function setup(replies, { audioMode = "speakers", audioMs = 1000, stt = { open: 
     audioMode,
     synth,
     log: () => {},
+    ...extra,
   });
   return { conv, calls, spokenTexts, speaker, brain };
 }
@@ -204,21 +205,24 @@ function fakeBrain(runTool) {
     context: () => "", runTool, afterTools,
   });
 }
-await t("brain: a tool-only start_task step is acknowledged locally with no second model call", async () => {
+await t("brain: after start_task Luna speaks in her own words (a second model step, no canned line)", async () => {
   const realFetch = globalThis.fetch;
   let n = 0;
   globalThis.fetch = async () => {
     n++;
-    return sse([
-      { delta: { tool_calls: [{ index: 0, id: "c1", function: { name: "start_task", arguments: '{"title":"Tell filer","description":"Tell .ts-filer"}' } }] } },
-      { delta: {}, finish_reason: "tool_calls" },
-    ]);
+    return n === 1
+      ? sse([
+          { delta: { tool_calls: [{ index: 0, id: "c1", function: { name: "start_task", arguments: '{"title":"Tell filer","description":"Tell .ts-filer"}' } }] } },
+          { delta: {}, finish_reason: "tool_calls" },
+        ])
+      : sse([{ delta: { content: "Jeg har satt en agent på å telle filene; det tar et minutt, så sier jeg fra." } }, { delta: {}, finish_reason: "stop" }]);
   };
   try {
     let heard = "";
     await fakeBrain(() => 'Started task t1 ("Tell filer").').respond("Jarvis, tell filene.", { onText: (c) => (heard += c) });
-    assert.equal(n, 1, "no second model step");
-    assert.ok(heard.trim().length > 3, "an acknowledgement was spoken");
+    assert.equal(n, 2, "Luna gets the tool result and answers herself");
+    assert.equal(heard.trim(), "Jeg har satt en agent på å telle filene; det tar et minutt, så sier jeg fra.");
+    assert.doesNotMatch(heard, /Skal bli/);
   } finally {
     globalThis.fetch = realFetch;
   }
@@ -303,6 +307,41 @@ await t("brain: a connection that fails twice gives up with the cause; HTTP erro
   } finally {
     globalThis.fetch = realFetch;
   }
+});
+
+// ---- study sessions: long answers with pauses ------------------------------------
+await t("study: an answer in several pieces is answered once, as a whole, after the pause", async () => {
+  const { conv, calls } = setup(["Bra. Neste spørsmål."], { patienceMs: () => 200, alwaysListen: () => true });
+  conv["onUtterance"]("Dagmulkt er forhåndsavtalt erstatning for forsinkelse.");
+  await tick(100);
+  conv["onUtterance"]("I NS 8405 er satsen én promille per hverdag.");
+  await tick(120);
+  assert.equal(calls.length, 0, "still waiting for the rest");
+  await tick(250);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0], "Dagmulkt er forhåndsavtalt erstatning for forsinkelse. I NS 8405 er satsen én promille per hverdag.");
+});
+await t("study: no wake word needed, and «ferdig» answers at once", async () => {
+  const { conv, calls } = setup(["Takk."], { patienceMs: () => 5000, alwaysListen: () => true });
+  conv["onUtterance"]("Pacta sunt servanda betyr at avtaler skal holdes, ferdig.");
+  await tick(30);
+  assert.equal(calls.length, 1);
+});
+await t("waiting for more: the timer does not fire while he is still talking", async () => {
+  const { conv, calls } = setup(["Ok."], { patienceMs: () => 100, alwaysListen: () => true });
+  conv["onUtterance"]("Første del av svaret.");
+  conv["session"] = { write() {}, commit: async () => "", cancel() {} }; // speech in progress
+  await tick(300);
+  assert.equal(calls.length, 0, "must not answer while speech is in progress");
+  conv["session"] = null;
+  await tick(350);
+  assert.equal(calls.length, 1);
+});
+await t("normal mode is unchanged: a complete request is answered at once", async () => {
+  const { conv, calls } = setup(["Klokka er ni."]);
+  conv["onUtterance"]("Jarvis, hva er klokka nå?");
+  await tick(30);
+  assert.equal(calls.length, 1);
 });
 
 console.log(`\n${passed} conversation tests passed`);

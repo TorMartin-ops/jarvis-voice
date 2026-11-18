@@ -20,7 +20,7 @@ const BYTES_PER_SECOND = SAMPLE_RATE * 2; // 16-bit mono
 const MAX_CONNECT_ATTEMPTS = 2;
 const RECONNECT_DELAY_MS = 200;
 
-const DEFAULT_MODEL = "scribe_v2_realtime";
+const DEFAULT_MODEL = "scribe_v3_live";
 const DEFAULT_DAILY_BUDGET_SECONDS = 3600;
 const DEFAULT_COMMIT_TIMEOUT_MS = 10_000;
 const MAX_KEYTERMS = 50;

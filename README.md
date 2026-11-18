@@ -37,6 +37,17 @@ Measured on this setup: Luna's first token about 0.5 s, end of speech to first a
 - Workers treat text from web pages, email and files as data, not instructions.
 - Tasks are saved in `~/.jarvis/tasks.json` with progress, deadline (30 min default) and final status. A task left running by a crash is marked `lost` on the next start. Full reports go to `~/.jarvis/reports/`.
 
+## Agents that report back
+
+- Luna sees a task board on every turn: what each agent is doing, its latest status in its own words, open questions and recent results. She never forgets a running job.
+- Agents write a short status line before each major step. After 15 seconds, and then at most once a minute, Jarvis gives a one-sentence update when the conversation is idle. Quick jobs only report when done.
+- An agent that needs a decision ends with a question; Jarvis asks you. Your answer, or a change to a running or finished job, goes back with `message_task`: the agent resumes the same Claude Code session and keeps everything it already knows. Only your own words can be sent; a turn started by a report cannot answer for you (enforced in code).
+- Workers run Sonnet by default (`JARVIS_WORKER_MODEL` overrides).
+
+## Study sessions
+
+Put a Markdown study pack in `~/.jarvis/study/` (for example an oral-exam drill for a course) and say "Jarvis, start ING400-øving". The pack goes into Luna's context, so answers and grading follow your course material instead of the model's memory. In a session Jarvis listens without the wake word, waits for long answers with pauses (or answer at once when you say "ferdig"), gives longer spoken feedback, and reads standards correctly ("NS 8405" as "NS åttifire null fem"). Say "avslutt øvingen" to stop. Packs stay on your PC, outside the repository.
+
 ## Memory
 
 Luna keeps a short list of facts you asked it to remember (`~/.jarvis/memory.json`, at most 40). Say "husk at ..." or "glem ...". Nothing is stored unless you ask.
@@ -82,6 +93,10 @@ Use a headset if you can. On a laptop's built-in speakers and microphone, set `J
 - `npm run e2e -- "Jarvis, ... | ja, send" --dry-tasks`: spoken multi-turn test through the whole chain. Flags: `--task`, `--echo` (own audio fed back into the mic), `--greet`, `--dry-tasks`.
 
 GitHub Actions runs `npm test` on macOS and Windows for every push, and checks that the bundled ffmpeg has each platform's microphone driver. Live voice tests have been run on Windows; on macOS the code paths are covered by tests and CI, not yet by a live session.
+
+Every log line is also written to `~/.jarvis/jarvis.log` (UTF-8, emptied at 5 MB), with a per-step latency breakdown for each reply.
+
+The microphone is watched: if capture stalls, exits or sends pure silence for 20 s (a muted, sleeping or reconnected headset), it is restarted automatically.
 
 ## Keys and privacy
 

@@ -17,6 +17,23 @@ function level(): number {
 const timingLog = () => join(process.env.JARVIS_DATA_DIR || join(homedir(), ".jarvis"), "latency.log");
 const MAX_TIMING_LOG_BYTES = 2 * 1024 * 1024;
 let timingLogChecked = false;
+const sessionLog = () => join(process.env.JARVIS_DATA_DIR || join(homedir(), ".jarvis"), "jarvis.log");
+const MAX_SESSION_LOG_BYTES = 5 * 1024 * 1024;
+let sessionLogChecked = false;
+
+/** Append one line to ~/.jarvis/jarvis.log (UTF-8, emptied when it passes 5 MB), so any run can be diagnosed afterwards. */
+export function toLogFile(line: string): void {
+  try {
+    if (!sessionLogChecked) {
+      sessionLogChecked = true;
+      const size = statSync(sessionLog(), { throwIfNoEntry: false })?.size ?? 0;
+      if (size > MAX_SESSION_LOG_BYTES) truncateSync(sessionLog(), 0);
+    }
+    appendFileSync(sessionLog(), line + "\n", { mode: 0o600 });
+  } catch {
+    // best-effort
+  }
+}
 
 export function debugEnabled(): boolean {
   return level() >= 1;
@@ -25,6 +42,7 @@ export function debugEnabled(): boolean {
 export function debugLog(msg: string): void {
   if (level() < 1) return;
   process.stderr.write(`jarvis: ${msg}\n`);
+  toLogFile(`${new Date().toLocaleTimeString("nb-NO")} jarvis: ${msg}`);
 }
 
 /** Log a latency measurement. `msg` must not contain transcript text. */

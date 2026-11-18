@@ -4,13 +4,14 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const { SentenceSplitter, toSpeech, sanitizeTags, stripTags } = await import("../dist/split.js");
+const { SentenceSplitter, toSpeech, sanitizeTags, stripTags, speakStandards } = await import("../dist/split.js");
 const { isEcho, isBackchannel, isStopCommand, overlap } = await import("../dist/echo.js");
 const { WakeGate } = await import("../dist/gate.js");
 const { isInside, redact } = await import("../dist/policy.js");
-const { parseWorkerEvent, WORKER_DISALLOWED } = await import("../dist/tasks.js");
+const { parseWorkerEvent, WORKER_DISALLOWED, statusLine, questionIn } = await import("../dist/tasks.js");
 const { Memory } = await import("../dist/memory.js");
-const { runLunaTool, finishNote, isConfirmation, confirmationGate, afterTools } = await import("../dist/luna-tools.js");
+const { runLunaTool, finishNote, isConfirmation, confirmationGate, afterTools, taskBoard, updateNote } = await import("../dist/luna-tools.js");
+const { StudyPacks, studyInstructions } = await import("../dist/study.js");
 const { parseSseLine } = await import("../dist/brain.js");
 const { loadConfig, loadDotEnv, ConfigError } = await import("../dist/config.js");
 const { micInputArgs, listDeviceArgs, parseDeviceList, ffmpegBinary } = await import("../dist/mic.js");
@@ -224,13 +225,14 @@ t("stop commands are recognized, requests that start with stop are not", () => {
 });
 
 // ---- turn policy after tools ------------------------------------------------------
-t("after tools: a started task with nothing said gets a spoken acknowledgement and ends the turn", () => {
+t("after tools: a started task lets Luna speak in her own words (no canned acknowledgement)", () => {
   const r = afterTools([{ name: "start_task", result: 'Started task t1 ("x").' }], "");
-  assert.ok(r.say && r.say.length > 3);
-  assert.equal(r.stop, true);
+  assert.equal(r.say, undefined);
+  assert.equal(r.stop, false);
+  assert.equal(afterTools([{ name: "start_task", result: 'Started task t1 ("x").' }], "Jeg setter en agent på det.").stop, false);
 });
 t("after tools: success after speech ends the turn; list_tasks and failures continue", () => {
-  assert.deepEqual(afterTools([{ name: "remember", result: "Saved." }], "Notert."), { say: undefined, stop: true });
+  assert.equal(afterTools([{ name: "remember", result: "Saved." }], "Notert.").stop, true);
   assert.equal(afterTools([{ name: "list_tasks", result: "t1: x - kjører" }], "").stop, false);
   assert.equal(afterTools([{ name: "list_tasks", result: "t1: x - kjører" }], "La meg se.").stop, false);
   assert.equal(afterTools([{ name: "cancel_task", result: "No running task with that id." }], "Stopper den.").stop, false);
@@ -238,7 +240,7 @@ t("after tools: success after speech ends the turn; list_tasks and failures cont
 });
 t("after tools: a block right after asking ends the turn quietly; a block without a question continues", () => {
   const blocked = [{ name: "start_task", result: "BLOCKED: confirmed_action ..." }];
-  assert.deepEqual(afterTools(blocked, "Skal jeg sende den? Svar «ja, send»."), { say: undefined, stop: true });
+  assert.equal(afterTools(blocked, "Skal jeg sende den? Svar «ja, send».").stop, true);
   assert.equal(afterTools(blocked, "Skal bli, jeg sender den.").stop, false, "must correct a wrong promise");
   assert.equal(afterTools(blocked, "").stop, false);
 });
@@ -248,7 +250,7 @@ t("speech: e-mail addresses are spoken the Norwegian way", () => {
 
 // ---- macOS and Windows ------------------------------------------------------------
 t("mic: Windows uses DirectShow, macOS uses AVFoundation audio-only input", () => {
-  assert.deepEqual(micInputArgs("Mikrofon (HyperX)", "win32"), ["-f", "dshow", "-i", "audio=Mikrofon (HyperX)"]);
+  assert.deepEqual(micInputArgs("Mikrofon (HyperX)", "win32"), ["-f", "dshow", "-audio_buffer_size", "50", "-i", "audio=Mikrofon (HyperX)"]);
   assert.deepEqual(micInputArgs("MacBook Pro Microphone", "darwin"), ["-f", "avfoundation", "-i", ":MacBook Pro Microphone"]);
   assert.deepEqual(micInputArgs("", "darwin"), ["-f", "avfoundation", "-i", ":default"]);
   assert.throws(() => micInputArgs("x", "linux"), /not supported on linux/);
@@ -283,6 +285,81 @@ t("config: macOS defaults to the system microphone, home folder and claude on PA
 });
 t("workers are blocked from macOS keychain, AppleScript, sudo and mail", () => {
   for (const rule of ["Bash(sudo:*)", "Bash(security:*)", "Bash(osascript:*)", "Bash(sendmail:*)", "Bash(rm -fr:*)"]) assert.ok(WORKER_DISALLOWED.includes(rule), rule);
+});
+
+// ---- agents talk back: status, questions, messages, task board ---------------------
+t("agents: the session id, status lines and questions are picked up", () => {
+  assert.deepEqual(parseWorkerEvent(JSON.stringify({ type: "system", subtype: "init", session_id: "abc-123" })), [{ kind: "session", id: "abc-123" }]);
+  assert.equal(statusLine("Fant tre e-poster om budet; leser den nyeste. Deretter sjekker jeg vedlegget."), "Fant tre e-poster om budet; leser den nyeste.");
+  assert.equal(statusLine("**Søker** i innboksen"), "Søker i innboksen");
+  assert.equal(questionIn("Jeg fant to eiendommer.\nSPØRSMÅL: Mener du engen i Arendal eller i Grimstad?"), "Mener du engen i Arendal eller i Grimstad?");
+  assert.equal(questionIn("Alt er gjort."), undefined);
+});
+t("agents: a question becomes [Agenten spør] with an instruction to use message_task", () => {
+  const note = finishNote({ id: "t1", title: "Sjekk bud", description: "d", status: "done", startedAt: "", progress: "", steps: 3, result: "Fant to. SPØRSMÅL: Hvilken eng?", question: "Hvilken eng?" });
+  assert.match(note, /^\[Agenten spør\]/);
+  assert.match(note, /message_task/);
+  assert.doesNotMatch(note, /SPØRSMÅL/);
+  assert.match(updateNote({ id: "t1", title: "Sjekk bud", startedAt: new Date(Date.now() - 30000).toISOString() }, "Leser e-posten."), /^\[Agentstatus\] "Sjekk bud" \(t1\), 30 s inne i jobben: Leser e-posten\.$/);
+});
+t("agents: the task board shows running work, open questions and recent results", () => {
+  const now = Date.parse("2026-11-18T20:00:00Z");
+  const board = taskBoard([
+    { id: "t1", title: "Sjekk bud", description: "", status: "running", startedAt: "2026-11-18T19:59:00Z", progress: "", steps: 4, update: "Leser den nyeste e-posten.", updatedAt: "2026-11-18T19:59:50Z" },
+    { id: "t2", title: "Finn stemme", description: "", status: "done", startedAt: "2026-11-18T19:50:00Z", endedAt: "2026-11-18T19:55:00Z", progress: "", steps: 2, result: "Fant to. SPØRSMÅL: Mann eller kvinne?", question: "Mann eller kvinne?" },
+    { id: "t3", title: "Tell filer", description: "", status: "done", startedAt: "2026-11-18T19:40:00Z", endedAt: "2026-11-18T19:45:00Z", progress: "", steps: 2, result: "Det er 20 filer." },
+    { id: "t4", title: "Gammel", description: "", status: "done", startedAt: "2026-11-18T10:00:00Z", endedAt: "2026-11-18T10:05:00Z", progress: "", steps: 1, result: "x" },
+  ], now);
+  assert.match(board, /t1 «Sjekk bud»: kjører i 60 s, 4 steg\. Siste status: Leser den nyeste e-posten\. \(10 s siden\)/);
+  assert.match(board, /t2 «Finn stemme»: venter på svar fra Tor Martin: Mann eller kvinne\?/);
+  assert.match(board, /t3 «Tell filer»: ferdig for 15 min siden\. Det er 20 filer\./);
+  assert.doesNotMatch(board, /Gammel/);
+  assert.equal(taskBoard([], now), "");
+});
+t("agents: message_task reaches the agent on his word; never from a report turn; missing fields are refused", () => {
+  const sent = [];
+  let said = "Det er engen i Arendal.";
+  const deps = {
+    tasks: { start: () => ({}), list: () => [], cancel: () => false, message: (id, text) => (sent.push([id, text]), `Sent to ${id}`) },
+    memory: { add: () => true, forget: () => 0 },
+    lastUserText: () => said, previousReply: () => "",
+  };
+  assert.equal(runLunaTool(deps, "message_task", { id: "t1", message: "Engen i Arendal." }), "Sent to t1");
+  assert.deepEqual(sent, [["t1", "Engen i Arendal."]]);
+  assert.match(runLunaTool(deps, "message_task", { id: "t1" }), /ERROR/);
+  said = ""; // a turn started by a task report
+  assert.match(runLunaTool(deps, "message_task", { id: "t1", message: "Let videre." }), /^BLOCKED/);
+  assert.equal(sent.length, 1);
+});
+t("speech: file paths are reduced to the folder or file name", () => {
+  assert.equal(toSpeech("Fant C:\\Users\\torma\\jarvis-voice med 22 filer."), "Fant jarvis-voice med 22 filer.");
+  assert.equal(toSpeech("Mappen ~/voice finnes ikke."), "Mappen voice finnes ikke.");
+  assert.equal(toSpeech("Største er src\\conversation.ts."), "Største er src\\conversation.ts.");
+});
+
+// ---- study packs -----------------------------------------------------------------
+t("study packs: found by course code however it is written, and private voice rules come first", () => {
+  const dir = mkdtempSync(join(tmpdir(), "jv-study-"));
+  writeFileSync(join(dir, "ing400.md"), "# ING400 – øvingsprompt\n\nDagmulkt NS 8405: 1 promille per hverdag.");
+  const packs = new StudyPacks(dir);
+  assert.deepEqual(packs.list(), [{ name: "ing400", title: "ING400 – øvingsprompt" }]);
+  for (const q of ["ING400", "ing 400", "ING-400", "", "ing400-øving"]) assert.equal(packs.find(q)?.name, "ing400", q);
+  assert.equal(packs.find("kjemi"), null);
+  const text = studyInstructions(packs.find("ing400"));
+  assert.ok(text.indexOf("ØVINGSMODUS") < text.indexOf("Dagmulkt NS 8405"), "voice rules before the material");
+  assert.match(text, /NS 8405, NLM 19/);
+  assert.equal(new StudyPacks(join(dir, "missing")).list().length, 0);
+});
+
+t("speech: standard numbers are read in pairs the Norwegian way, in code", () => {
+  assert.equal(speakStandards("NS 8405"), "NS åttifire null fem");
+  assert.equal(speakStandards("NS 8401 og NS 8407"), "NS åttifire null en og NS åttifire null sju");
+  assert.equal(speakStandards("NS 3720"), "NS trettisju tjue");
+  assert.equal(speakStandards("NS 3420"), "NS trettifire tjue");
+  assert.equal(speakStandards("NLM 19 pkt. 74"), "NLM nitten pkt. 74");
+  assert.equal(speakStandards("FOA § 13-2 og avtl. §§ 4 og 6"), "FOA paragraf 13-2 og avtl. paragrafene 4 og 6");
+  assert.equal(speakStandards("1 ‰ per hverdag"), "1 promille per hverdag");
+  assert.equal(toSpeech("Etter **NS 8405** er det 1 ‰."), "Etter NS åttifire null fem er det 1 promille.");
 });
 
 console.log(`\n${passed} tests passed`);

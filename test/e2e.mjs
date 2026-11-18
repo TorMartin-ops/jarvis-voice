@@ -18,7 +18,8 @@ const phrases = arg.split("|").map((p) => p.trim()).filter(Boolean);
 const flag = (f) => process.argv.includes(f);
 const log = (m) => console.log(`${new Date().toLocaleTimeString("nb-NO")} ${m}`);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const CHUNK = 16000 * 2 * 0.02;
+// Half-second chunks, like ffmpeg with default DirectShow buffering: catches framing bugs that 20 ms chunks hide.
+const CHUNK = 16000 * 2 * 0.5;
 
 async function speak(text) {
   const res = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${cfg.ttsVoice}?output_format=pcm_16000`, {

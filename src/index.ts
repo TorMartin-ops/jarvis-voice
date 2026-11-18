@@ -7,13 +7,23 @@ import { SpeechToText } from "./stt.js";
 import { Brain } from "./brain.js";
 import { WakeGate } from "./gate.js";
 import { Conversation } from "./conversation.js";
-import { TaskManager } from "./tasks.js";
+import { TaskManager, type TaskInfo } from "./tasks.js";
 import { Memory } from "./memory.js";
-import { runLunaTool, finishNote, afterTools } from "./luna-tools.js";
+import { runLunaTool, finishNote, afterTools, taskBoard, updateNote } from "./luna-tools.js";
+import { StudyPacks, studyInstructions, type StudyPack } from "./study.js";
+
+const UPDATE_FIRST_MS = 15_000;
+const UPDATE_EVERY_MS = 60_000;
+const UPDATE_SETTLE_MS = 3_000;
+/** In a study session, answer after this much quiet (answers are long and have pauses), or at once on "ferdig". */
+const STUDY_PATIENCE_MS = 1_800;
 import { redact } from "./policy.js";
+import { toLogFile } from "./debug.js";
 
 function log(msg: string): void {
-  console.log(`${new Date().toLocaleTimeString("nb-NO")} ${redact(msg)}`);
+  const line = `${new Date().toLocaleTimeString("nb-NO")} ${redact(msg)}`;
+  console.log(line);
+  toLogFile(line);
 }
 
 /** Build the whole assistant. Exported so the end-to-end test can drive it without a microphone. */
@@ -23,10 +33,29 @@ export async function createAssistant(
   extra: { onAudioOut?: (pcm: Buffer) => void } = {},
 ) {
   const memory = new Memory(join(cfg.dataDir, "memory.json"));
+  const packs = new StudyPacks(join(cfg.dataDir, "study"));
+  let study: StudyPack | null = null;
   // What Tor Martin said this turn; the confirmation gate checks it before any outward action.
   let lastUserText = "";
   let previousReply = "";
   let conversation: Conversation | null = null;
+
+  // Spoken progress: the first update after UPDATE_FIRST_MS, then at most one per task per UPDATE_EVERY_MS,
+  // so quick jobs only report when done and long ones never go silent. Not during a study session.
+  const lastSpokenUpdate = new Map<string, number>();
+  const onUpdate = (t: TaskInfo, text: string) => {
+    const now = Date.now();
+    if (study || now - Date.parse(t.startedAt) < UPDATE_FIRST_MS) return;
+    if (now - (lastSpokenUpdate.get(t.id) ?? 0) < UPDATE_EVERY_MS) return;
+    lastSpokenUpdate.set(t.id, now);
+    // The agent's last text is also its final answer: wait a moment, and say nothing if it finished
+    // meanwhile (the finish report covers it).
+    setTimeout(() => {
+      if (t.status !== "running" || t.update !== text) return;
+      logFn(`task ${t.id} update: ${text}`);
+      conversation?.announce(updateNote(t, text));
+    }, UPDATE_SETTLE_MS);
+  };
 
   const tasks = new TaskManager({
     claudeBin: cfg.claudeBin,
@@ -34,25 +63,55 @@ export async function createAssistant(
     dir: cfg.dataDir,
     timeoutMs: cfg.taskTimeoutMs,
     model: cfg.workerModel,
+    onUpdate,
     onFinish: (t) => {
-      logFn(`task ${t.id} ${t.status}${t.costUsd !== undefined ? ` ($${t.costUsd.toFixed(3)})` : ""}`);
+      lastSpokenUpdate.delete(t.id);
+      logFn(`task ${t.id} ${t.status}${t.question ? " (asks a question)" : ""}${t.costUsd !== undefined ? ` ($${t.costUsd.toFixed(3)})` : ""}`);
       conversation?.announce(finishNote(t));
     },
   });
+
+  const studyControl = {
+    start: (name?: string) => {
+      const pack = packs.find(name);
+      if (!pack) {
+        const names = packs.list().map((p) => p.name);
+        return names.length ? `No study pack matches "${name ?? ""}". Available: ${names.join(", ")}.` : "No study packs found in ~/.jarvis/study.";
+      }
+      study = pack;
+      logFn(`study session started: ${pack.name}`);
+      return `Study session "${pack.title}" started. Its instructions are now in your context: greet him as the examiner and begin as they say.`;
+    },
+    stop: () => {
+      if (!study) return "No study session is running.";
+      logFn(`study session ended: ${study.name}`);
+      study = null;
+      return "Study session ended. Back to normal conversation.";
+    },
+  };
 
   const brain = new Brain({
     endpoint: cfg.azure.endpoint,
     apiKey: cfg.azure.key,
     deployment: cfg.azure.deployment,
     apiVersion: cfg.azure.apiVersion,
-    // The model has no clock: give it the real time and date every turn, plus long-term memory.
+    // Stable parts first and the clock last, so Azure can reuse the cached prompt prefix.
     context: () => {
       const now = new Date();
       const when = now.toLocaleString("nb-NO", { weekday: "long", day: "numeric", month: "long", year: "numeric", hour: "2-digit", minute: "2-digit" });
-      return [`Nå er det ${when} (Norge).`, memory.render()].filter(Boolean).join("\n\n");
+      const available = packs.list();
+      return [
+        study ? studyInstructions(study) : "",
+        !study && available.length ? `Øvingspakker du kan starte med start_study: ${available.map((p) => `${p.name} («${p.title}»)`).join(", ")}.` : "",
+        memory.render(),
+        taskBoard(tasks.list(), now.getTime()),
+        `Nå er det ${when} (Norge).`,
+      ].filter(Boolean).join("\n\n");
     },
-    runTool: (name, args) => runLunaTool({ tasks, memory, lastUserText: () => lastUserText, previousReply: () => previousReply, log: logFn }, name, args),
+    runTool: (name, args) =>
+      runLunaTool({ tasks, memory, study: studyControl, lastUserText: () => lastUserText, previousReply: () => previousReply, log: logFn }, name, args),
     afterTools,
+    limits: () => (study ? { maxTokens: 1200, maxHistory: 80, cacheKey: `jarvis-study-${study.name}` } : { maxTokens: 500, maxHistory: 40, cacheKey: "jarvis-luna" }),
   });
 
   conversation = new Conversation({
@@ -70,10 +129,12 @@ export async function createAssistant(
       lastUserText = text;
       previousReply = before;
     },
+    patienceMs: () => (study ? STUDY_PATIENCE_MS : 0),
+    alwaysListen: () => study !== null,
     log: logFn,
   });
 
-  return { conversation, tasks, memory, brain };
+  return { conversation, tasks, memory, brain, study: studyControl };
 }
 
 async function main(): Promise<void> {

@@ -8,17 +8,19 @@ import { debugLog, timing } from "./debug.js";
 
 export const SYSTEM_PROMPT = `Du er Jarvis, stemmeassistenten til Tor Martin. Du snakker norsk bokmål. Du er den han snakker med. Selve arbeidet gjøres av arbeidsagenter (Claude Code) på PC-en hans.
 
-Personlighet: rolig, skarp og lojal, med tørr, lun humor. Tenk en dyktig butler som også er en god kollega: alltid et steg foran, aldri servil, aldri frekk. Litt ironi når stemningen tillater det, men aldri på hans bekostning når noe har gått galt. Du har meninger og sier dem kort når han spør. Du bruker navnet hans av og til, ikke i hver setning. Ingen flørting.
+Personlighet: rolig, skarp og lojal, med tørr, lun humor. Tenk en dyktig butler som også er en god kollega: alltid et steg foran, aldri servil, aldri frekk. Litt ironi når stemningen tillater det, men aldri på hans bekostning når noe har gått galt. Du har meninger og sier dem kort når han spør. Du bruker navnet hans av og til, ikke i hver setning. Du er også flørtende og sjarmerende: lekne komplimenter, et glimt i øyet og en lun, litt fristende tone, gjerne med [mischievously] eller [laughs] når det passer. Hold det smakfullt og kort, og legg flørtingen bort når han er stresset, når noe har gått galt, eller når andre er til stede.
 
-Snakk kort og naturlig, som et menneske: én til to korte setninger. Ingen lister, markdown eller emojier, for alt du skriver blir lest opp. Variér formuleringene, så du ikke høres ut som en maskin. Skriv klokkeslett, datoer og tall slik de sies høyt, for eksempel «ti på to», «tolvte desember» og «rundt tre hundre», ikke «13:50» eller «12.12».
+Snakk som et menneske i en samtale, ikke som en kommandotolk: svar på det han faktisk mener, vis at du husker det dere har snakket om, og ta initiativ. Foreslå neste steg, si fra om noe han bør vite, og still et kort oppfølgingsspørsmål når det hjelper ham videre. Vanligvis én til tre setninger; mer bare når han ber om forklaring. Ingen lister, markdown eller emojier, for alt du skriver blir lest opp. Si aldri filstier, kommandoer, kode eller lenker høyt; si mappe- eller filnavnet med vanlige ord. Variér formuleringene, så du ikke høres ut som en maskin. Skriv klokkeslett, datoer og tall slik de sies høyt, for eksempel «ti på to», «tolvte desember» og «rundt tre hundre», ikke «13:50» eller «12.12».
 
 Lydtagger: stemmen din forstår noen få tagger i hakeparentes, plassert rett før ordene de gjelder: [laughs], [sighs], [exhales], [whispers], [curious], [excited], [sarcastic], [mischievously], [short pause]. Bruk høyst én per svar, og bare når det føles naturlig, for eksempel [laughs] etter en spøk eller [sighs] når noe feilet. Ikke bruk tagger når han er stresset eller når temaet er alvorlig. Finn aldri på andre tagger.
 
-Arbeid: alt som krever filer, kode, nettet, e-post, kalender eller mer enn et kort svar du kan gi selv, starter du med start_task. Gi en kort tittel og en selvstendig beskrivelse med mål, kontekst og hva ferdig betyr. Si en kort setning som «Skal bli, jeg setter i gang» i samme svar som du kaller start_task, slik at han hører deg med en gang. Fortsett samtalen etterpå. Vent aldri på at oppgaven blir ferdig.
+Agentene dine: alt som krever filer, kode, nettet, e-post, kalender eller mer enn et kort svar du kan gi selv, gir du til en agent med start_task. Er oppdraget uklart eller tvetydig, still først ett kort oppklarende spørsmål; ellers start med en gang. Gi en kort tittel og en selvstendig beskrivelse med mål, all kontekst fra samtalen og hva ferdig betyr, for agenten vet bare det du skriver. Etterpå sier du med egne ord hva agenten skal gjøre, omtrent hvor lang tid det tar, og at du holder ham oppdatert. Aldri bare «skal bli». Fortsett samtalen; vent aldri på agenten.
 
-Status: når han spør hva som skjer, bruk list_tasks og svar kort.
-
-Når du får en melding som starter med [Oppgave ferdig], fortell resultatet i én eller to setninger. Hvis arbeideren trenger en beslutning, still spørsmålet.
+Du leder agentene slik Jarvis holder Tony Stark oppdatert: konkret, kort og i forkant. Oppgavetavlen i konteksten viser alltid hva hver agent gjør og har funnet; bruk den når han spør, uten verktøy, og nevn selv en agent som jobber når det passer.
+- [Agentstatus]: fremdrift fra en agent. Gi én kort, konkret oppdatering om hva den har funnet eller gjør nå, uten å gjenta det du sa sist.
+- [Oppgave ferdig]: fortell resultatet konkret i én til tre setninger, med tallene og navnene som betyr noe, og foreslå neste steg eller spør hva han vil gjøre med det.
+- [Agenten spør]: still spørsmålet til ham med egne ord. Når han svarer, send svaret med message_task.
+- Vil han endre eller legge til noe i en jobb som går eller er ferdig, send det med message_task i stedet for å starte en ny agent; agenten fortsetter med det den allerede vet.
 
 Utgående eller irreversible handlinger (sende meldinger eller e-post, poste, pushe, betale, slette): les opp nøyaktig hva som skal skje, med mottaker, innhold eller beløp, og be om et tydelig «ja, send» eller «ja, gjør det». Si det én gang, i én eller to setninger, og vent på svaret. Ikke start noen oppgave for handlingen før han har bekreftet; koden stopper det uansett. Først da starter du oppgaven med confirmed_action som beskriver akkurat det han bekreftet. Sett aldri confirmed_action uten en slik bekreftelse fra ham i denne samtalen.
 
@@ -69,6 +71,30 @@ export const LUNA_TOOLS = [
   {
     type: "function" as const,
     function: {
+      name: "message_task",
+      description: "Send a message to an agent (running or finished): Tor Martin's answer to its question, a correction, or extra instructions. The agent continues in the same session with everything it already knows.",
+      parameters: {
+        type: "object",
+        properties: { id: { type: "string" }, message: { type: "string", description: "Self-contained message in Norwegian." } },
+        required: ["id", "message"],
+      },
+    },
+  },
+  {
+    type: "function" as const,
+    function: {
+      name: "start_study",
+      description: "Start a spoken study or oral-exam practice session from one of Tor Martin's study packs (listed in the context). Then follow the pack's instructions.",
+      parameters: { type: "object", properties: { name: { type: "string", description: "Pack name or course code, e.g. ING400." } } },
+    },
+  },
+  {
+    type: "function" as const,
+    function: { name: "stop_study", description: "End the current study session.", parameters: { type: "object", properties: {} } },
+  },
+  {
+    type: "function" as const,
+    function: {
       name: "forget",
       description: "Delete remembered facts that contain this phrase.",
       parameters: { type: "object", properties: { phrase: { type: "string" } }, required: ["phrase"] },
@@ -78,7 +104,7 @@ export const LUNA_TOOLS = [
 
 export const MAX_STEPS = 4;
 const MAX_HISTORY = 30;
-const MAX_TOKENS = 300;
+const MAX_TOKENS = 500;
 
 export interface BrainHooks {
   onText(chunk: string): void;
@@ -148,7 +174,18 @@ export interface BrainOptions {
    * `say` is spoken at once; `stop` ends the turn without another model step.
    */
   afterTools?: (outcomes: { name: string; result: string }[], spoken: string) => { say?: string; stop: boolean };
+  /** Per-turn limits; a study session needs longer answers and a longer memory of the conversation. */
+  limits?: () => BrainLimits;
 }
+
+export interface BrainLimits {
+  maxTokens: number;
+  maxHistory: number;
+  /** Requests with the same key and the same prompt prefix share Azure's prompt cache. */
+  cacheKey: string;
+}
+
+const DEFAULT_LIMITS: BrainLimits = { maxTokens: MAX_TOKENS, maxHistory: MAX_HISTORY, cacheKey: "jarvis-luna" };
 
 export class Brain {
   private history: ChatMessage[] = [];
@@ -168,11 +205,12 @@ export class Brain {
   /** Answer a user utterance, or (with null) the notes already added. Streams text to hooks.onText. */
   async respond(userText: string | null, hooks: BrainHooks, signal?: AbortSignal): Promise<void> {
     if (userText) this.history.push({ role: "user", content: userText });
-    const extra = this.opts.context();
-    const system = extra ? `${SYSTEM_PROMPT}\n\n${extra}` : SYSTEM_PROMPT;
 
     let spoken = "";
     for (let step = 0; step < MAX_STEPS; step++) {
+      // Built per step: a tool (such as start_study) can change the context for the next step.
+      const extra = this.opts.context();
+      const system = extra ? `${SYSTEM_PROMPT}\n\n${extra}` : SYSTEM_PROMPT;
       const { text, toolCalls, finish } = await this.streamStep(system, hooks, signal);
       spoken += text;
       debugLog(`LLM step ${step}: finish=${finish} tools=${toolCalls.map((c) => c.name).join(",") || "-"} chars=${text.length}`);
@@ -214,6 +252,7 @@ export class Brain {
 
   private async streamStep(system: string, hooks: BrainHooks, signal?: AbortSignal) {
     const started = Date.now();
+    const limits = this.opts.limits?.() ?? DEFAULT_LIMITS;
     const res = await fetchRetryingConnection(this.url, {
       method: "POST",
       headers: { "api-key": this.opts.apiKey, "content-type": "application/json" },
@@ -221,10 +260,10 @@ export class Brain {
         messages: [{ role: "system", content: system }, ...this.history],
         tools: LUNA_TOOLS,
         stream: true,
-        max_completion_tokens: MAX_TOKENS,
+        max_completion_tokens: limits.maxTokens,
         // Voice needs the first word fast; function tools need reasoning off on chat completions for this model family.
         reasoning_effort: "none",
-        prompt_cache_key: "jarvis-luna",
+        prompt_cache_key: limits.cacheKey,
       }),
       signal,
     });
@@ -288,7 +327,8 @@ export class Brain {
 
   /** Keep history short. Cut only at a user message so tool messages are never orphaned. */
   private trim(): void {
-    while (this.history.length > MAX_HISTORY) {
+    const max = (this.opts.limits?.() ?? DEFAULT_LIMITS).maxHistory;
+    while (this.history.length > max) {
       const next = this.history.findIndex((m, i) => i > 0 && m.role === "user");
       if (next < 0) break;
       this.history = this.history.slice(next);

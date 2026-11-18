@@ -18,7 +18,8 @@ export function ffmpegBinary(env: NodeJS.ProcessEnv = process.env): string {
 export function micInputArgs(device: string, platform: NodeJS.Platform = process.platform): string[] {
   switch (platform) {
     case "win32":
-      return ["-f", "dshow", "-i", `audio=${device}`];
+      // DirectShow buffers 500 ms by default; 50 ms chunks let the voice detector react that much sooner.
+      return ["-f", "dshow", "-audio_buffer_size", "50", "-i", `audio=${device}`];
     case "darwin":
       // AVFoundation takes "video:audio"; an empty video part means audio only.
       return ["-f", "avfoundation", "-i", `:${device || "default"}`];
@@ -51,22 +52,122 @@ export function parseDeviceList(output: string, platform: NodeJS.Platform = proc
   return names;
 }
 
-export function startMic(device: string, onChunk: (pcm: Buffer) => void, onError: (msg: string) => void): Mic {
-  const child: ChildProcess = spawn(
-    ffmpegBinary(),
-    ["-hide_banner", "-loglevel", "error", ...micInputArgs(device), "-ac", "1", "-ar", "16000", "-f", "s16le", "-"],
-    { windowsHide: true },
-  );
-  child.stdout!.on("data", (d: Buffer) => onChunk(d));
-  child.stderr!.on("data", (d: Buffer) => onError(d.toString().trim()));
-  child.on("error", (err) => onError(`could not start ffmpeg: ${err.message}`));
-  child.on("exit", (code) => {
-    if (code !== 0 && code !== null) {
-      const hint = process.platform === "darwin" ? " On macOS, allow microphone access for your terminal in System Settings > Privacy & Security > Microphone." : "";
-      onError(`microphone capture stopped (exit ${code}).${hint}`);
+/** Largest absolute sample in a PCM16 chunk. Real microphones never stay below a few units; muted or stale devices send exact zeros. */
+export function peakLevel(pcm: Buffer): number {
+  let peak = 0;
+  for (let i = 0; i + 1 < pcm.length; i += 2) {
+    const s = Math.abs(pcm.readInt16LE(i));
+    if (s > peak) peak = s;
+  }
+  return peak;
+}
+
+export interface MicOptions {
+  /** Restart capture when no audio arrives for this long (a stalled device). Default 3 s. */
+  stallMs?: number;
+  /** Restart capture after this much unbroken digital silence (a muted, sleeping or reconnected headset). Default 20 s. */
+  silenceMs?: number;
+  /** Longest wait between restart attempts while the device is missing. Default 10 s. */
+  maxBackoffMs?: number;
+  /** For tests. */
+  spawnFn?: (cmd: string, args: string[]) => ChildProcess;
+}
+
+const DIGITAL_SILENCE_PEAK = 4;
+
+/**
+ * Capture the microphone and keep it alive. The headset can be muted, go to sleep, be switched off
+ * or reconnected, and ffmpeg then stalls, exits, or keeps a stale handle that only delivers zeros.
+ * Each case restarts capture (with backoff while the device is missing), so the assistant starts
+ * hearing again by itself instead of needing a restart.
+ */
+export function startMic(device: string, onChunk: (pcm: Buffer) => void, onLog: (msg: string) => void, opts: MicOptions = {}): Mic {
+  const stallMs = opts.stallMs ?? 3_000;
+  const silenceMs = opts.silenceMs ?? 20_000;
+  const maxBackoffMs = opts.maxBackoffMs ?? 10_000;
+  const spawnFn = opts.spawnFn ?? ((cmd, args) => spawn(cmd, args, { windowsHide: true }));
+  const args = ["-hide_banner", "-loglevel", "error", ...micInputArgs(device), "-ac", "1", "-ar", "16000", "-flush_packets", "1", "-f", "s16le", "-"];
+
+  let child: ChildProcess | null = null;
+  let stopped = false;
+  let lastData = Date.now();
+  let silentSince: number | null = null;
+  let warnedSilence = false;
+  let failures = 0;
+  let restartTimer: NodeJS.Timeout | null = null;
+
+  const start = () => {
+    restartTimer = null;
+    if (stopped) return;
+    lastData = Date.now();
+    const proc = spawnFn(ffmpegBinary(), args);
+    child = proc;
+    proc.stdout!.on("data", (d: Buffer) => {
+      if (child !== proc) return;
+      lastData = Date.now();
+      if (failures > 0) {
+        onLog("microphone is back");
+        failures = 0;
+      }
+      if (peakLevel(d) <= DIGITAL_SILENCE_PEAK) {
+        silentSince ??= Date.now();
+      } else {
+        if (warnedSilence) onLog("microphone hears sound again");
+        silentSince = null;
+        warnedSilence = false;
+      }
+      onChunk(d);
+    });
+    proc.stderr!.on("data", (d: Buffer) => {
+      const msg = d.toString().trim();
+      if (msg && failures < 2) onLog(msg);
+    });
+    proc.on("error", (err) => onLog(`could not start ffmpeg: ${err.message}`));
+    proc.on("exit", (code) => {
+      if (child !== proc || stopped) return;
+      child = null;
+      failures++;
+      const wait = Math.min(maxBackoffMs, 500 * 2 ** Math.min(failures - 1, 5));
+      if (failures === 1) {
+        const hint = process.platform === "darwin" ? " On macOS, allow microphone access for your terminal in System Settings > Privacy & Security > Microphone." : "";
+        onLog(`microphone capture stopped (exit ${code ?? "signal"}); retrying until it is back.${hint}`);
+      }
+      restartTimer = setTimeout(start, wait);
+    });
+  };
+
+  const restart = (why: string) => {
+    if (stopped || !child) return;
+    onLog(`restarting microphone capture: ${why}`);
+    const old = child;
+    child = null;
+    old.kill();
+    silentSince = null;
+    restartTimer = setTimeout(start, 300);
+  };
+
+  const watchdog = setInterval(() => {
+    if (stopped || !child) return;
+    const now = Date.now();
+    if (now - lastData > stallMs) restart(`no audio for ${Math.round((now - lastData) / 1000)} s`);
+    else if (silentSince !== null && now - silentSince > silenceMs) {
+      if (!warnedSilence) onLog("microphone sends pure silence: is the headset muted, asleep or switched off?");
+      warnedSilence = true;
+      restart("only silence");
     }
-  });
-  return { stop: () => child.kill() };
+  }, Math.min(1_000, stallMs / 2, silenceMs / 2));
+  watchdog.unref?.();
+
+  start();
+  return {
+    stop: () => {
+      stopped = true;
+      clearInterval(watchdog);
+      if (restartTimer) clearTimeout(restartTimer);
+      child?.kill();
+      child = null;
+    },
+  };
 }
 
 /** Lists audio input devices, for finding the JARVIS_MIC value. */

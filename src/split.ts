@@ -28,14 +28,46 @@ export class SentenceSplitter {
   }
 }
 
+const ONES = ["null", "en", "to", "tre", "fire", "fem", "seks", "sju", "åtte", "ni"];
+const TEENS = ["ti", "elleve", "tolv", "tretten", "fjorten", "femten", "seksten", "sytten", "atten", "nitten"];
+const TENS = ["", "", "tjue", "tretti", "førti", "femti", "seksti", "sytti", "åtti", "nitti"];
+
+/** A two-digit group the way Norwegians read standard numbers: "84" -> "åttifire", "05" -> "null fem". */
+function pairWords(p: string): string {
+  if (p.length === 1) return ONES[+p];
+  if (p[0] === "0") return `null ${ONES[+p[1]]}`;
+  const n = +p;
+  if (n < 20) return TEENS[n - 10];
+  return TENS[Math.floor(n / 10)] + (n % 10 ? ONES[n % 10] : "");
+}
+
+/**
+ * Standard numbers spoken the Norwegian way, in pairs: "NS 8405" -> "NS åttifire null fem",
+ * "NS 3720" -> "NS trettisju tjue", "NLM 19" -> "NLM nitten". Done in code, because the model
+ * gets the digits wrong when it spells them out itself.
+ */
+export function speakStandards(text: string): string {
+  return text
+    .replace(/\b(NS(?:-EN)?|NLM|NL|NS-ISO)\s?(\d{2,4})\b/g, (_m, name: string, num: string) => {
+      const pairs = num.length === 3 ? [num[0], num.slice(1)] : num.match(/\d{1,2}/g)!;
+      return `${name} ${pairs.map(pairWords).join(" ")}`;
+    })
+    .replace(/§§\s?/g, "paragrafene ")
+    .replace(/§\s?/g, "paragraf ")
+    .replace(/\s?‰/g, " promille");
+}
+
 /** Remove markdown that would be read aloud or distort speech: emphasis, code ticks, headings, bullets, links. */
 export function toSpeech(text: string): string {
-  return text
+  return speakStandards(text)
     .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
     .replace(/```[\s\S]*?```/g, " ")
     .replace(/`([^`]*)`/g, "$1")
     .replace(/(\*\*|__|\*|_)(.+?)\1/g, "$2")
     .replace(/^\s{0,3}(#{1,6}|[-*+]|\d+\.)\s+/gm, "")
+    // File paths are unreadable aloud: keep only the last part ("C:\Users\x\jarvis-voice" -> "jarvis-voice").
+    .replace(/[A-Za-z]:\\(?:[^\s\\,;"«»()]+\\)*([^\s\\,;"«»()]*[^\s\\,;"«»().])/g, "$1")
+    .replace(/~\/(?:[^\s/,;"«»()]+\/)*([^\s/,;"«»()]*[^\s/,;"«»().])/g, "$1")
     // Say e-mail addresses the Norwegian way instead of letting the voice guess at "@" and ".".
     .replace(/([\w.+-]+)@([\w-]+(?:\.[\w-]+)+)/g, (_m, user: string, domain: string) =>
       `${user} krøllalfa ${domain.split(".").join(" punktum ")}`)

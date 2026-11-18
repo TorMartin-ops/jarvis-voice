@@ -46,6 +46,10 @@ export interface ConversationDeps {
   synth?: typeof synthesize;
   /** Called at the start of every turn with what Tor Martin said ("" for report turns). */
   onUserTurn?: (text: string, previousReply: string) => void;
+  /** Quiet time to wait after each utterance before answering (a study session: long answers with pauses). */
+  patienceMs?: () => number;
+  /** Treat all speech as addressed to the assistant, without the wake word (a study session). */
+  alwaysListen?: () => boolean;
   log: (msg: string) => void;
 }
 
@@ -102,6 +106,8 @@ export class Conversation {
   private playback: Promise<void> = Promise.resolve();
   private queue: Queued[] = [];
   private endedAt = 0;
+  /** Milliseconds after the end of speech for each step of the current reply (for TURN_LATENCY). */
+  private marks: { stt?: number; sentence?: number; tts?: number } = {};
   private reportLatency = false;
   private pending: { text: string; timer: ReturnType<typeof setTimeout> } | null = null;
   /** What the assistant said recently (words only), for the echo guard. */
@@ -202,6 +208,7 @@ export class Conversation {
     switch (e.type) {
       case "start":
         this.session = this.d.stt.open();
+        debugLog(this.session ? "vad: speech started" : "vad: speech started, but speech-to-text refused a session (daily budget used up?)");
         this.session?.write(e.audio);
         this.sessionOverlaps = this.halfDuplex && this.replyAudible();
         // On speakers the mic hears the reply itself, so only a transcript may cut it (see onUtterance).
@@ -231,13 +238,23 @@ export class Conversation {
         const session = this.session;
         this.session = null;
         if (e.discard || !session) {
+          if (e.discard) debugLog("vad: too short or mostly noise; discarded");
           session?.cancel();
           return;
         }
+        const endedAt = this.endedAt;
+        this.transcribing++;
         session
           .commit()
-          .then((text) => this.onUtterance(text.trim(), overlapped))
-          .catch((err) => this.d.log(`transcription failed: ${redact((err as Error).message)}`));
+          .then((text) => {
+            this.transcribing--;
+            this.marks = { stt: Date.now() - endedAt };
+            this.onUtterance(text.trim(), overlapped);
+          })
+          .catch((err) => {
+            this.transcribing--;
+            this.d.log(`transcription failed: ${redact((err as Error).message)}`);
+          });
         return;
       }
     }
@@ -282,7 +299,8 @@ export class Conversation {
       this.pending = null;
     }
     // admit() opens the conversation window when the name is said, even if nothing else follows.
-    if (!this.d.gate.admit(text)) {
+    // In a study session everything he says is for the examiner.
+    if (!this.d.alwaysListen?.() && !this.d.gate.admit(text)) {
       debugLog("not addressed to the assistant; ignored");
       return;
     }
@@ -295,19 +313,41 @@ export class Conversation {
     // Very short pieces ("Hei.") are usually the start of a longer request, even with a full stop.
     const words = command.split(/\s+/).filter(Boolean).length;
     const unfinished = words <= 2 || !/[.!?…]$/.test(command);
-    if (!command || (unfinished && this.d.mergeMs > 0)) {
-      // Wake word alone, or a fragment: wait briefly for the rest before answering.
-      this.pending = {
-        text,
-        timer: setTimeout(() => {
-          const p = this.pending;
-          this.pending = null;
-          if (p) this.handle(p.text);
-        }, this.d.mergeMs),
-      };
+    // In a study session answers are long and come with pauses: wait for the whole answer,
+    // unless he says he is done.
+    const patience = this.d.patienceMs?.() ?? 0;
+    const done = patience > 0 && /(^|[\s,])(ferdig|det var alt|det var det)[.!]?$/i.test(command);
+    let wait = 0;
+    if (!command || (unfinished && this.d.mergeMs > 0)) wait = Math.max(this.d.mergeMs, patience);
+    else if (patience > 0 && !done) wait = patience;
+    if (wait > 0 || !command) {
+      // Wake word alone, a fragment, or a long answer: wait for the rest before answering.
+      this.holdForMore(text, wait);
       return;
     }
     this.handle(text);
+  }
+
+  /** Utterances being transcribed right now (between the end of speech and the transcript). */
+  private transcribing = 0;
+
+  /**
+   * Keep `text` and answer it after `ms` of quiet. While he is still talking, or the next piece is
+   * being transcribed, keep waiting, so the pieces are merged instead of answered one by one.
+   */
+  private holdForMore(text: string, ms: number): void {
+    if (this.pending) clearTimeout(this.pending.timer);
+    const fire = () => {
+      const p = this.pending;
+      if (!p) return;
+      if (this.session || this.transcribing > 0) {
+        p.timer = setTimeout(fire, 250);
+        return;
+      }
+      this.pending = null;
+      this.handle(p.text);
+    };
+    this.pending = { text, timer: setTimeout(fire, ms) };
   }
 
   private handle(text: string): void {
@@ -379,9 +419,12 @@ export class Conversation {
     if (this.recentSpoken.length > 12) this.recentSpoken.shift();
     const stream = new ChunkStream();
     const t = this.d.tts;
+    const first = this.endedAt > 0 && this.marks.sentence === undefined;
+    if (first) this.marks.sentence = Date.now() - this.endedAt;
     void (async () => {
       try {
         for await (const chunk of (this.d.synth ?? synthesize)(clean, { apiKey: t.apiKey, voice: t.voice, model: t.model, signal: ctl.signal })) {
+          if (first && this.marks.tts === undefined && this.endedAt) this.marks.tts = Date.now() - this.endedAt;
           stream.push(chunk);
         }
         stream.end();
@@ -405,7 +448,10 @@ export class Conversation {
           for await (const chunk of item.stream.chunks()) {
             if (item.generation !== this.generation) break;
             if (this.reportLatency && this.endedAt) {
-              timing(`TURN_LATENCY: ${Date.now() - this.endedAt}ms from end of speech to first audio`);
+              const m = this.marks;
+              const steps = [m.stt !== undefined && `stt ${m.stt}`, m.sentence !== undefined && `first sentence ${m.sentence}`, m.tts !== undefined && `tts first audio ${m.tts}`].filter(Boolean).join(", ");
+              timing(`TURN_LATENCY: ${Date.now() - this.endedAt}ms from end of speech to first audio${steps ? ` (${steps})` : ""}`);
+              this.marks = {};
               this.reportLatency = false;
               this.endedAt = 0; // measure only replies to speech, not later announcements
             }

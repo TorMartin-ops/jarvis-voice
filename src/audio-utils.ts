@@ -202,9 +202,10 @@ export class SpeechBuffer {
     // Digital silence while idle is codec padding; skip the VAD to save CPU.
     if (this.state === State.WAITING && calculateRMS(chunk) < DIGITAL_SILENCE_RMS) return [];
 
+    // Any chunk size works: the loop below consumes whole frames, so at most one partial frame is
+    // ever left over. (An old guard here emptied the buffer for chunks over 10 KB; ffmpeg on Windows
+    // delivers about 16 KB at a time, so every word was thrown away.)
     this.frameAccumulator = Buffer.concat([this.frameAccumulator, chunk]);
-    // Guard against unbounded growth if the stream is corrupt.
-    if (this.frameAccumulator.length > VAD_FRAME_BYTES * 10) this.frameAccumulator = Buffer.alloc(0);
 
     const events: SpeechEvent[] = [];
     while (this.frameAccumulator.length >= VAD_FRAME_BYTES) {

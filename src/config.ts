@@ -100,7 +100,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, platform: NodeJ
     mergeMs: num(env, "JARVIS_MERGE_MS") ?? 800,
     audioMode,
     taskTimeoutMs: num(env, "JARVIS_TASK_TIMEOUT_MS") ?? 30 * 60_000,
-    workerModel: str(env, "JARVIS_WORKER_MODEL"),
+    // Sonnet: fast and capable for background jobs; set JARVIS_WORKER_MODEL to override.
+    workerModel: str(env, "JARVIS_WORKER_MODEL") ?? "sonnet",
     dataDir: str(env, "JARVIS_DATA_DIR") ?? join(home, ".jarvis"),
     workerCwd: str(env, "JARVIS_WORKER_CWD") ?? home,
     ffplayPath: str(env, "JARVIS_FFPLAY") ?? "ffplay",

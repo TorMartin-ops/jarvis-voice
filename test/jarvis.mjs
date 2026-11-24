@@ -11,7 +11,7 @@ const { isInside, redact } = await import("../dist/policy.js");
 const { parseWorkerEvent, WORKER_DISALLOWED, statusLine, questionIn } = await import("../dist/tasks.js");
 const { Memory } = await import("../dist/memory.js");
 const { runLunaTool, finishNote, isConfirmation, confirmationGate, afterTools, taskBoard, updateNote } = await import("../dist/luna-tools.js");
-const { StudyPacks, studyInstructions, splitFrontMatter } = await import("../dist/study.js");
+const { StudyPacks, studyInstructions, splitFrontMatter, roleplayFeedbackInstructions } = await import("../dist/study.js");
 const { parseSseLine, reasoningHeadroom, toResponsesInput, applyResponsesEvent, RESPONSES_TOOLS, LUNA_TOOLS } = await import("../dist/brain.js");
 const { loadConfig, loadDotEnv, ConfigError } = await import("../dist/config.js");
 const { micInputArgs, listDeviceArgs, parseDeviceList, ffmpegBinary } = await import("../dist/mic.js");
@@ -413,6 +413,13 @@ t("study packs: «modus: rollespill» makes Jarvis play the role, with feedback 
   assert.match(studyInstructions(packs.find("ing400")), /^ØVINGSMODUS/);
   assert.equal(splitFrontMatter("---\r\nmodus: rollespill\r\n---\r\nTekst").mode, "rollespill");
   assert.deepEqual(splitFrontMatter("Ingen front matter"), { mode: "eksamen", body: "Ingen front matter" });
+  // Live, the model called stop_study first and the material left its context, so no feedback came.
+  assert.match(text, /bruk stop_study med en gang, uten å si noe først/, "stop first, then feedback");
+  const after = roleplayFeedbackInstructions(role);
+  assert.match(after, /^ROLLESPILLET ER AVSLUTTET: Salgsmøte med Yassin/);
+  assert.match(after, /Gi nå tilbakemeldingen/);
+  assert.ok(after.includes("Du er Yassin, økonomisjef."), "the feedback step still has the material it grades against");
+  assert.match(after, /Ikke bruk stop_study igjen/);
 });
 
 t("speech: standard numbers are read in pairs the Norwegian way, in code", () => {

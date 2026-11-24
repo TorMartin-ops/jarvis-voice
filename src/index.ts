@@ -11,7 +11,7 @@ import { Conversation } from "./conversation.js";
 import { TaskManager, type TaskInfo } from "./tasks.js";
 import { Memory } from "./memory.js";
 import { runLunaTool, finishNote, afterTools, taskBoard, updateNote } from "./luna-tools.js";
-import { StudyPacks, studyInstructions, type StudyPack } from "./study.js";
+import { StudyPacks, studyInstructions, roleplayFeedbackInstructions, type StudyPack } from "./study.js";
 
 const UPDATE_FIRST_MS = 15_000;
 const UPDATE_EVERY_MS = 60_000;
@@ -36,6 +36,9 @@ export async function createAssistant(
   const memory = new Memory(join(cfg.dataDir, "memory.json"));
   const packs = new StudyPacks(join(cfg.dataDir, "study"));
   let study: StudyPack | null = null;
+  // A role-play that just ended: its material stays in context until he speaks again, so the
+  // feedback that follows stop_study is based on it.
+  let ending: { pack: StudyPack; heardBefore: string } | null = null;
   // What Tor Martin said this turn; the confirmation gate checks it before any outward action.
   let lastUserText = "";
   let previousReply = "";
@@ -72,6 +75,12 @@ export async function createAssistant(
     },
   });
 
+  /** Feedback instructions while a role-play's feedback is due; cleared once he speaks again. */
+  const endingContext = (): string => {
+    if (ending && lastUserText !== ending.heardBefore) ending = null;
+    return ending ? roleplayFeedbackInstructions(ending.pack) : "";
+  };
+
   const studyControl = {
     start: (name?: string) => {
       const pack = packs.find(name);
@@ -80,6 +89,7 @@ export async function createAssistant(
         return names.length ? `No study pack matches "${name ?? ""}". Available: ${names.join(", ")}.` : "No study packs found in ~/.jarvis/study.";
       }
       study = pack;
+      ending = null;
       logFn(`study session started: ${pack.name}`);
       return pack.mode === "rollespill"
         ? `Role-play "${pack.title}" started. Its instructions are now in your context: you are the person it describes. Open in that role exactly as the material says, and stay in it.`
@@ -88,7 +98,12 @@ export async function createAssistant(
     stop: () => {
       if (!study) return "No study session is running.";
       logFn(`study session ended: ${study.name}`);
+      const pack = study;
       study = null;
+      if (pack.mode === "rollespill") {
+        ending = { pack, heardBefore: lastUserText };
+        return "Role-play ended. Step out of the role now and give the feedback the material describes, in full, as speech. Do not call stop_study again.";
+      }
       return "Study session ended. Back to normal conversation.";
     },
   };
@@ -106,6 +121,7 @@ export async function createAssistant(
       const available = packs.list();
       return [
         study ? studyInstructions(study) : "",
+        endingContext(),
         !study && available.length ? `Øvingspakker du kan starte med start_study: ${available.map((p) => `${p.name} («${p.title}»)`).join(", ")}.` : "",
         memory.render(),
         taskBoard(tasks.list(), now.getTime()),
@@ -115,7 +131,7 @@ export async function createAssistant(
     runTool: (name, args) =>
       runLunaTool({ tasks, memory, study: studyControl, lastUserText: () => lastUserText, previousReply: () => previousReply, log: logFn }, name, args),
     afterTools,
-    limits: () => (study ? { maxTokens: 1200, maxHistory: 80, cacheKey: `jarvis-study-${study.name}`, reasoningEffort: cfg.azure.studyReasoningEffort } : { maxTokens: 500, maxHistory: 40, cacheKey: "jarvis-luna" }),
+    limits: () => (study || endingContext() ? { maxTokens: 1200, maxHistory: 80, cacheKey: `jarvis-study-${(study ?? ending!.pack).name}`, reasoningEffort: cfg.azure.studyReasoningEffort } : { maxTokens: 500, maxHistory: 40, cacheKey: "jarvis-luna" }),
   });
 
   conversation = new Conversation({

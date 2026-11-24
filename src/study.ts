@@ -78,6 +78,16 @@ MATERIALET:
 ${pack.text}`;
 }
 
+/** System text right after a role-play ends: the feedback, with the material it is based on. */
+export function roleplayFeedbackInstructions(pack: StudyPack): string {
+  return `ROLLESPILLET ER AVSLUTTET: ${pack.title}
+
+Du er ute av rollen og er Jarvis igjen. Gi nå tilbakemeldingen materialet beskriver under «Tilbakemelding», basert på hele samtalen over. Vær ærlig og konkret, og gjengi hans egne formuleringer der materialet ber om det. Dette er tale: ingen markdown eller lister, bare flytende setninger, høyst rundt 450 ord. Si først kort at øvingen er avsluttet. Ikke bruk stop_study igjen.
+
+MATERIALET:
+${pack.text}`;
+}
+
 /**
  * A role-play session: Jarvis becomes the person in the pack (for example a customer before a sales
  * meeting) and stays in that role, without coaching, until he ends the practice. Feedback comes only then.
@@ -92,7 +102,7 @@ Reglene her gjelder foran alt annet i systemteksten, også personligheten din so
 - Vær realistisk: still dine egne spørsmål, ta opp bekymringene og innvendingene i materialet når de passer naturlig inn, avbryt høflig hvis han prater for lenge, og bli mer skeptisk hvis han lover noe materialet sier ikke finnes.
 - Finn aldri på fakta om rollen, personen eller virksomheten. Spør han om noe materialet ikke dekker, svar slik en travel leder ville uten tallet foran seg («det har jeg ikke i hodet nå», «det må jeg sjekke»), eller spør hvorfor han lurer. Finn heller aldri på noe om produktet han selger.
 - Et svar kan komme i flere biter med pauser; svar på helheten. Han kan si «ferdig» når han er ferdig med å snakke.
-- Når han sier «avslutt øvingen», «stopp rollespillet» eller «nok for i dag»: gå ut av rollen, si det kort, og gi tilbakemeldingen materialet beskriver, høyst rundt 450 ord, som flytende tale. Bruk så stop_study.
+- Når han sier «avslutt øvingen», «stopp rollespillet» eller «nok for i dag»: bruk stop_study med en gang, uten å si noe først. Tilbakemeldingen gir du etterpå.
 
 MATERIALET:
 ${pack.text}`;

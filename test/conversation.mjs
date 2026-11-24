@@ -269,6 +269,49 @@ await t("brain: list_tasks still gets a second step so the result is read out", 
   }
 });
 
+function sseEvents(events) {
+  const body = events.map((e) => "data: " + JSON.stringify(e) + "\n\n").join("");
+  return new Response(new Blob([body]).stream(), { status: 200 });
+}
+await t("brain: a practice session thinks on the Responses API, other turns stay on fast chat completions", async () => {
+  const realFetch = globalThis.fetch;
+  const seen = [];
+  let study = true;
+  globalThis.fetch = async (url, init) => {
+    const body = JSON.parse(init.body);
+    seen.push({ url, body });
+    return url.includes("/openai/v1/responses")
+      ? sseEvents([
+          { type: "response.output_text.delta", delta: "Det har jeg ikke tallet på nå." },
+          { type: "response.completed", response: {} },
+        ])
+      : sse([{ delta: { content: "Hei." } }, { delta: {}, finish_reason: "stop" }]);
+  };
+  try {
+    const brain = new Brain({
+      endpoint: "https://res.openai.azure.com", apiKey: "x", deployment: "gpt-6-luna", apiVersion: "v",
+      context: () => "", runTool: () => "", afterTools,
+      limits: () => (study ? { maxTokens: 1200, maxHistory: 80, cacheKey: "s", reasoningEffort: "medium" } : { maxTokens: 500, maxHistory: 40, cacheKey: "c" }),
+    });
+    let heard = "";
+    await brain.respond("Hva koster overtiden dere?", { onText: (c) => (heard += c) });
+    assert.equal(heard.trim(), "Det har jeg ikke tallet på nå.");
+    assert.equal(seen[0].url, "https://res.openai.azure.com/openai/v1/responses");
+    assert.deepEqual(seen[0].body.reasoning, { effort: "medium" });
+    assert.equal(seen[0].body.model, "gpt-6-luna");
+    assert.ok(seen[0].body.max_output_tokens > 1200, "thinking gets headroom beyond the spoken answer");
+    assert.deepEqual(seen[0].body.input.at(-1), { role: "user", content: "Hva koster overtiden dere?" });
+    study = false;
+    heard = "";
+    await brain.respond("hei", { onText: (c) => (heard += c) });
+    assert.match(seen[1].url, /\/chat\/completions\?/, "outside practice: chat completions");
+    assert.equal(seen[1].body.reasoning_effort, "none");
+    assert.equal(heard.trim(), "Hei.");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
 const connectionError = () => new TypeError("fetch failed", { cause: { code: "ECONNRESET", message: "other side closed" } });
 await t("brain: a failed connection is tried once more, and the reply still comes", async () => {
   const realFetch = globalThis.fetch;

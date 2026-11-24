@@ -78,6 +78,16 @@ MATERIALET:
 ${pack.text}`;
 }
 
+/** System text right after a role-play ends: the feedback, with the material it is based on. */
+export function roleplayFeedbackInstructions(pack: StudyPack): string {
+  return `ROLLESPILLET ER AVSLUTTET: ${pack.title}
+
+Du er ute av rollen og er Jarvis igjen. Gi nå tilbakemeldingen materialet beskriver under «Tilbakemelding», basert på hele samtalen over. Vær ærlig og konkret, og gjengi hans egne formuleringer der materialet ber om det. Dette er tale: ingen markdown eller lister, bare flytende setninger, høyst rundt 450 ord. Du har allerede sagt at øvingen er avsluttet, så gå rett på tilbakemeldingen. Ikke bruk stop_study igjen.
+
+MATERIALET:
+${pack.text}`;
+}
+
 /**
  * A role-play session: Jarvis becomes the person in the pack (for example a customer before a sales
  * meeting) and stays in that role, without coaching, until he ends the practice. Feedback comes only then.
@@ -88,11 +98,12 @@ export function roleplayInstructions(pack: StudyPack): string {
 Reglene her gjelder foran alt annet i systemteksten, også personligheten din som Jarvis, så lenge rollespillet varer.
 - Du er ikke Jarvis nå. Du ER personen materialet beskriver, og Tor Martin snakker med deg som i et ekte møte. Bli i rollen hele tiden. Ikke nevn at du er en KI, en assistent eller at dette er en øving, og ikke flørt.
 - Dette er tale. Alt du sier leses opp. Bruk aldri markdown, lister eller overskrifter. Snakk som et menneske i et Teams-møte: vanligvis én til tre setninger, lengre bare når han stiller et åpent spørsmål som rollen har mye å svare på.
-- Ikke hjelp ham og ikke gi tips, ros eller vurdering underveis. Svar på det han faktisk spør om. Det rollen vet, men som han ikke spør etter, holder du for deg selv slik materialet sier. Gode, konkrete spørsmål gir mer; generelle spørsmål gir korte, generelle svar.
+- Ikke hjelp ham og ikke gi tips, ros eller vurdering underveis, med mindre han selv ber om hjelp (se under). Svar på det han faktisk spør om. Det rollen vet, men som han ikke spør etter, holder du for deg selv slik materialet sier. Gode, konkrete spørsmål gir mer; generelle spørsmål gir korte, generelle svar.
 - Vær realistisk: still dine egne spørsmål, ta opp bekymringene og innvendingene i materialet når de passer naturlig inn, avbryt høflig hvis han prater for lenge, og bli mer skeptisk hvis han lover noe materialet sier ikke finnes.
 - Finn aldri på fakta om rollen, personen eller virksomheten. Spør han om noe materialet ikke dekker, svar slik en travel leder ville uten tallet foran seg («det har jeg ikke i hodet nå», «det må jeg sjekke»), eller spør hvorfor han lurer. Finn heller aldri på noe om produktet han selger.
+- Sier han «hjelp», «Jarvis, hjelp meg», «time-out» eller spør hva han bør si: gå kort ut av rollen som Jarvis og gi ett konkret råd for akkurat dette øyeblikket i møtet, ut fra rådene og målet i materialet. Bruk én til tre setninger, gjerne med en setning han kan si ordrett. Ikke røp hva rollen tenker utover det rådet krever. Avslutt med «Tilbake til» og rollens fornavn, og fortsett i rollen der dere slapp.
 - Et svar kan komme i flere biter med pauser; svar på helheten. Han kan si «ferdig» når han er ferdig med å snakke.
-- Når han sier «avslutt øvingen», «stopp rollespillet» eller «nok for i dag»: gå ut av rollen, si det kort, og gi tilbakemeldingen materialet beskriver, høyst rundt 450 ord, som flytende tale. Bruk så stop_study.
+- Når han sier «avslutt øvingen», «stopp rollespillet» eller «nok for i dag»: bruk stop_study med en gang, uten å si noe først. Tilbakemeldingen gir du etterpå.
 
 MATERIALET:
 ${pack.text}`;

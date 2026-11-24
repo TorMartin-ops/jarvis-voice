@@ -35,7 +35,7 @@ export interface ConversationDeps {
   brain: Brain;
   speaker: Speaker;
   gate: WakeGate;
-  tts: { apiKey: string; voice: string; model: string };
+  tts: { apiKey: string; voice: string; model: string; language?: string };
   bargeInMs: number;
   mergeMs: number;
   /** headset: talking over the reply cuts it after bargeInMs. speakers: only a real transcript cuts it (echo-safe). */
@@ -423,7 +423,7 @@ export class Conversation {
     if (first) this.marks.sentence = Date.now() - this.endedAt;
     void (async () => {
       try {
-        for await (const chunk of (this.d.synth ?? synthesize)(clean, { apiKey: t.apiKey, voice: t.voice, model: t.model, signal: ctl.signal })) {
+        for await (const chunk of (this.d.synth ?? synthesize)(clean, { apiKey: t.apiKey, voice: t.voice, model: t.model, language: t.language, signal: ctl.signal })) {
           if (first && this.marks.tts === undefined && this.endedAt) this.marks.tts = Date.now() - this.endedAt;
           stream.push(chunk);
         }

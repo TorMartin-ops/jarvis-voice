@@ -415,6 +415,7 @@ t("study packs: «modus: rollespill» makes Jarvis play the role, with feedback 
   assert.deepEqual(splitFrontMatter("Ingen front matter"), { mode: "eksamen", body: "Ingen front matter" });
   // Live, the model called stop_study first and the material left its context, so no feedback came.
   assert.match(text, /bruk stop_study med en gang, uten å si noe først/, "stop first, then feedback");
+  assert.match(text, /Sier han «hjelp»[^\n]*gå kort ut av rollen som Jarvis og gi ett konkret råd[^\n]*fortsett i rollen der dere slapp/, "he can ask for a hint mid-meeting and the role resumes");
   const after = roleplayFeedbackInstructions(role);
   assert.match(after, /^ROLLESPILLET ER AVSLUTTET: Salgsmøte med Yassin/);
   assert.match(after, /Gi nå tilbakemeldingen/);

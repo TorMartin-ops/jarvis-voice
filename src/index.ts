@@ -80,7 +80,9 @@ export async function createAssistant(
       }
       study = pack;
       logFn(`study session started: ${pack.name}`);
-      return `Study session "${pack.title}" started. Its instructions are now in your context: greet him as the examiner and begin as they say.`;
+      return pack.mode === "rollespill"
+        ? `Role-play "${pack.title}" started. Its instructions are now in your context: you are the person it describes. Open in that role exactly as the material says, and stay in it.`
+        : `Study session "${pack.title}" started. Its instructions are now in your context: greet him as the examiner and begin as they say.`;
     },
     stop: () => {
       if (!study) return "No study session is running.";

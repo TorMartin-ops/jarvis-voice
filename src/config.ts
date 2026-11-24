@@ -8,8 +8,10 @@ export interface Config {
   sttModel?: string;
   ttsModel: string;
   ttsVoice: string;
+  /** Sent as language_code to TTS; leave unset for models that reject it (eleven_v4_turbo). */
+  ttsLanguage?: string;
   language?: string;
-  azure: { endpoint: string; key: string; deployment: string; apiVersion: string };
+  azure: { endpoint: string; key: string; deployment: string; apiVersion: string; reasoningEffort: ReasoningEffort };
   micDevice: string;
   wakeWords: string[];
   wakeWindowMs: number;
@@ -24,6 +26,9 @@ export interface Config {
   ffplayPath: string;
   claudeBin: string;
 }
+
+export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high";
+const EFFORTS: ReasoningEffort[] = ["none", "minimal", "low", "medium", "high"];
 
 export class ConfigError extends Error {}
 
@@ -74,7 +79,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, platform: NodeJ
     key: need("AZURE_OPENAI_API_KEY"),
     deployment: need("AZURE_OPENAI_DEPLOYMENT"),
     apiVersion: str(env, "AZURE_OPENAI_API_VERSION") ?? "2024-10-21",
+    reasoningEffort: (str(env, "JARVIS_REASONING_EFFORT") ?? "none") as ReasoningEffort,
   };
+  if (!EFFORTS.includes(azure.reasoningEffort)) {
+    throw new ConfigError(`JARVIS_REASONING_EFFORT must be one of ${EFFORTS.join(", ")}, got "${azure.reasoningEffort}"`);
+  }
   // macOS can use the system default input; DirectShow on Windows has no default, so a name is required.
   const micDevice = platform === "darwin" ? str(env, "JARVIS_MIC") ?? "default" : need("JARVIS_MIC");
   const home = (platform === "win32" ? str(env, "USERPROFILE") : str(env, "HOME")) ?? homedir();
@@ -88,6 +97,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, platform: NodeJ
     sttModel: str(env, "ELEVENLABS_STT_MODEL"),
     ttsModel: str(env, "ELEVENLABS_TTS_MODEL") ?? "eleven_v4_turbo",
     ttsVoice: str(env, "ELEVENLABS_VOICE_ID") ?? "BRY5wALXFkJsxVM6sEOH",
+    ttsLanguage: str(env, "ELEVENLABS_TTS_LANGUAGE"),
     language: str(env, "JARVIS_LANGUAGE") ?? "nb-NO",
     azure,
     micDevice,

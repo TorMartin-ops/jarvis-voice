@@ -1,4 +1,5 @@
 import { join } from "path";
+import { homedir } from "os";
 import { loadConfig, loadDotEnv, ConfigError, type Config } from "./config.js";
 import { startMic, listMicDevices, type Mic } from "./mic.js";
 import { Speaker } from "./speaker.js";
@@ -97,6 +98,7 @@ export async function createAssistant(
     apiKey: cfg.azure.key,
     deployment: cfg.azure.deployment,
     apiVersion: cfg.azure.apiVersion,
+    reasoningEffort: cfg.azure.reasoningEffort,
     // Stable parts first and the clock last, so Azure can reuse the cached prompt prefix.
     context: () => {
       const now = new Date();
@@ -122,7 +124,7 @@ export async function createAssistant(
     brain,
     speaker: new Speaker(cfg.ffplayPath),
     gate: new WakeGate(cfg.wakeWords, cfg.wakeWindowMs),
-    tts: { apiKey: cfg.elevenKey, voice: cfg.ttsVoice, model: cfg.ttsModel },
+    tts: { apiKey: cfg.elevenKey, voice: cfg.ttsVoice, model: cfg.ttsModel, language: cfg.ttsLanguage },
     bargeInMs: cfg.bargeInMs,
     mergeMs: cfg.mergeMs,
     audioMode: cfg.audioMode,
@@ -141,6 +143,8 @@ export async function createAssistant(
 
 async function main(): Promise<void> {
   process.env.VOICE_DEBUG ??= "1";
+  // Personal overrides in the data folder (model, voice) win over the repository's .env.
+  loadDotEnv(join(process.env.JARVIS_DATA_DIR || join(homedir(), ".jarvis"), "jarvis.env"));
   loadDotEnv(join(process.cwd(), ".env"));
 
   if (process.argv.includes("--devices")) {

@@ -166,6 +166,8 @@ export interface BrainOptions {
   apiKey: string;
   deployment: string;
   apiVersion: string;
+  /** "none" keeps the first word fast; higher values make Luna think before she answers. */
+  reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high";
   /** Extra system text added each turn (long-term memory). */
   context: () => string;
   runTool: (name: string, args: Record<string, unknown>) => Promise<string> | string;
@@ -183,6 +185,11 @@ export interface BrainLimits {
   maxHistory: number;
   /** Requests with the same key and the same prompt prefix share Azure's prompt cache. */
   cacheKey: string;
+}
+
+/** Tokens added to the answer budget for thinking at each effort level. */
+export function reasoningHeadroom(effort: NonNullable<BrainOptions["reasoningEffort"]>): number {
+  return { none: 0, minimal: 1000, low: 2000, medium: 4000, high: 8000 }[effort];
 }
 
 const DEFAULT_LIMITS: BrainLimits = { maxTokens: MAX_TOKENS, maxHistory: MAX_HISTORY, cacheKey: "jarvis-luna" };
@@ -260,9 +267,10 @@ export class Brain {
         messages: [{ role: "system", content: system }, ...this.history],
         tools: LUNA_TOOLS,
         stream: true,
-        max_completion_tokens: limits.maxTokens,
-        // Voice needs the first word fast; function tools need reasoning off on chat completions for this model family.
-        reasoning_effort: "none",
+        // Reasoning tokens count against max_completion_tokens, so thinking gets its own headroom.
+        max_completion_tokens: limits.maxTokens + reasoningHeadroom(this.opts.reasoningEffort ?? "none"),
+        // "none" by default: voice needs the first word fast. JARVIS_REASONING_EFFORT raises it.
+        reasoning_effort: this.opts.reasoningEffort ?? "none",
         prompt_cache_key: limits.cacheKey,
       }),
       signal,

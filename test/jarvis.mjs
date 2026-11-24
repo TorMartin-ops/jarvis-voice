@@ -12,7 +12,7 @@ const { parseWorkerEvent, WORKER_DISALLOWED, statusLine, questionIn } = await im
 const { Memory } = await import("../dist/memory.js");
 const { runLunaTool, finishNote, isConfirmation, confirmationGate, afterTools, taskBoard, updateNote } = await import("../dist/luna-tools.js");
 const { StudyPacks, studyInstructions, splitFrontMatter } = await import("../dist/study.js");
-const { parseSseLine } = await import("../dist/brain.js");
+const { parseSseLine, reasoningHeadroom } = await import("../dist/brain.js");
 const { loadConfig, loadDotEnv, ConfigError } = await import("../dist/config.js");
 const { micInputArgs, listDeviceArgs, parseDeviceList, ffmpegBinary } = await import("../dist/mic.js");
 
@@ -162,6 +162,18 @@ t("config: defaults and parsing", () => {
   assert.equal(loadConfig({ ...base, JARVIS_AUDIO_MODE: "speakers", JARVIS_WAKE_WINDOW_MS: "60000" }).wakeWindowMs, 60000);
   assert.ok(cfg.wakeWords.includes("luna"));
   assert.throws(() => loadConfig({ ...process.env, ELEVENLABS_API_KEY: "e", JARVIS_BARGE_IN_MS: "-1", AZURE_OPENAI_ENDPOINT: "x", AZURE_OPENAI_API_KEY: "k", AZURE_OPENAI_DEPLOYMENT: "d", JARVIS_MIC: "m" }), ConfigError);
+});
+t("config: Luna's reasoning effort and the TTS language are opt-in", () => {
+  const base = { ELEVENLABS_API_KEY: "e", AZURE_OPENAI_ENDPOINT: "x", AZURE_OPENAI_API_KEY: "k", AZURE_OPENAI_DEPLOYMENT: "d", JARVIS_MIC: "m" };
+  const plain = loadConfig(base);
+  assert.equal(plain.azure.reasoningEffort, "none", "voice stays fast unless asked otherwise");
+  assert.equal(plain.ttsLanguage, undefined, "no language_code by default: eleven_v4_turbo rejects it");
+  const tuned = loadConfig({ ...base, JARVIS_REASONING_EFFORT: "medium", ELEVENLABS_TTS_LANGUAGE: "no" });
+  assert.equal(tuned.azure.reasoningEffort, "medium");
+  assert.equal(tuned.ttsLanguage, "no");
+  assert.throws(() => loadConfig({ ...base, JARVIS_REASONING_EFFORT: "middels" }), (e) => e instanceof ConfigError && /JARVIS_REASONING_EFFORT/.test(e.message));
+  assert.equal(reasoningHeadroom("none"), 0, "no thinking, no extra tokens");
+  assert.ok(reasoningHeadroom("medium") >= 2000, "thinking must not eat the spoken answer's 500 tokens");
 });
 t("config: .env loads without overriding real environment", () => {
   const dir = mkdtempSync(join(tmpdir(), "jv-"));

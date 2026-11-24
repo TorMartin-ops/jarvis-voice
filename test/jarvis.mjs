@@ -420,6 +420,10 @@ t("study packs: «modus: rollespill» makes Jarvis play the role, with feedback 
   assert.match(after, /Gi nå tilbakemeldingen/);
   assert.ok(after.includes("Du er Yassin, økonomisjef."), "the feedback step still has the material it grades against");
   assert.match(after, /Ikke bruk stop_study igjen/);
+  // Live, the feedback took 14 s to think through: a short line is spoken at once instead.
+  const ended = afterTools([{ name: "stop_study", result: "Role-play ended. Step out of the role now and give the feedback." }], "");
+  assert.deepEqual(ended, { say: "Øvingen er avsluttet. Et øyeblikk, så får du tilbakemeldingen.", stop: false }, "spoken at once, then the feedback step");
+  assert.equal(afterTools([{ name: "stop_study", result: "Study session ended. Back to normal conversation." }], "").say, undefined, "exam sessions unchanged");
 });
 
 t("speech: standard numbers are read in pairs the Norwegian way, in code", () => {

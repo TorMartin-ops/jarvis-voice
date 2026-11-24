@@ -62,6 +62,8 @@ export interface ToolOutcome {
  * start_task, message_task and the study tools are deliberately not here: after them Luna should
  * say in her own words what happens next, instead of a canned "skal bli".
  */
+export const ROLEPLAY_ENDED_LINE = "Øvingen er avsluttet. Et øyeblikk, så får du tilbakemeldingen.";
+
 const QUIET_SUCCESS: Record<string, RegExp> = {
   cancel_task: /^Cancelled/,
   remember: /^(Saved|Already remembered)/,
@@ -76,6 +78,10 @@ const quietOk = (o: ToolOutcome) => QUIET_SUCCESS[o.name]?.test(o.result) ?? fal
  * - anything else: let Luna continue and speak.
  */
 export function afterTools(outcomes: ToolOutcome[], spoken: string): { say?: string; stop: boolean } {
+  // The feedback after a role-play takes a while to think through: say so at once instead of silence.
+  if (outcomes.some((o) => o.name === "stop_study" && o.result.startsWith("Role-play ended"))) {
+    return { say: ROLEPLAY_ENDED_LINE, stop: false };
+  }
   if (!spoken.trim()) return { stop: false };
   if (outcomes.every(quietOk)) return { stop: true };
   const onlyBlocked = outcomes.every((o) => quietOk(o) || o.result.startsWith("BLOCKED"));

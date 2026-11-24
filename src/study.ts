@@ -82,7 +82,7 @@ ${pack.text}`;
 export function roleplayFeedbackInstructions(pack: StudyPack): string {
   return `ROLLESPILLET ER AVSLUTTET: ${pack.title}
 
-Du er ute av rollen og er Jarvis igjen. Gi nå tilbakemeldingen materialet beskriver under «Tilbakemelding», basert på hele samtalen over. Vær ærlig og konkret, og gjengi hans egne formuleringer der materialet ber om det. Dette er tale: ingen markdown eller lister, bare flytende setninger, høyst rundt 450 ord. Si først kort at øvingen er avsluttet. Ikke bruk stop_study igjen.
+Du er ute av rollen og er Jarvis igjen. Gi nå tilbakemeldingen materialet beskriver under «Tilbakemelding», basert på hele samtalen over. Vær ærlig og konkret, og gjengi hans egne formuleringer der materialet ber om det. Dette er tale: ingen markdown eller lister, bare flytende setninger, høyst rundt 450 ord. Du har allerede sagt at øvingen er avsluttet, så gå rett på tilbakemeldingen. Ikke bruk stop_study igjen.
 
 MATERIALET:
 ${pack.text}`;

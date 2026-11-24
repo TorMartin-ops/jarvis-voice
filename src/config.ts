@@ -11,7 +11,7 @@ export interface Config {
   /** Sent as language_code to TTS; leave unset for models that reject it (eleven_v4_turbo). */
   ttsLanguage?: string;
   language?: string;
-  azure: { endpoint: string; key: string; deployment: string; apiVersion: string; reasoningEffort: ReasoningEffort };
+  azure: { endpoint: string; key: string; deployment: string; apiVersion: string; reasoningEffort: ReasoningEffort; studyReasoningEffort: ReasoningEffort };
   micDevice: string;
   wakeWords: string[];
   wakeWindowMs: number;
@@ -31,6 +31,12 @@ export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high";
 const EFFORTS: ReasoningEffort[] = ["none", "minimal", "low", "medium", "high"];
 
 export class ConfigError extends Error {}
+
+function effort(env: NodeJS.ProcessEnv, key: string, fallback: ReasoningEffort): ReasoningEffort {
+  const v = (env[key]?.trim() || fallback) as ReasoningEffort;
+  if (!EFFORTS.includes(v)) throw new ConfigError(`${key} must be one of ${EFFORTS.join(", ")}, got "${v}"`);
+  return v;
+}
 
 /** Load KEY=VALUE lines into `env` without overriding values already set. */
 export function loadDotEnv(path: string, env: NodeJS.ProcessEnv = process.env): void {
@@ -79,11 +85,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, platform: NodeJ
     key: need("AZURE_OPENAI_API_KEY"),
     deployment: need("AZURE_OPENAI_DEPLOYMENT"),
     apiVersion: str(env, "AZURE_OPENAI_API_VERSION") ?? "2024-10-21",
-    reasoningEffort: (str(env, "JARVIS_REASONING_EFFORT") ?? "none") as ReasoningEffort,
+    reasoningEffort: effort(env, "JARVIS_REASONING_EFFORT", "none"),
+    // Practice sessions think before answering: a role must not invent facts, and a short wait is fine there.
+    studyReasoningEffort: effort(env, "JARVIS_STUDY_REASONING_EFFORT", "medium"),
   };
-  if (!EFFORTS.includes(azure.reasoningEffort)) {
-    throw new ConfigError(`JARVIS_REASONING_EFFORT must be one of ${EFFORTS.join(", ")}, got "${azure.reasoningEffort}"`);
-  }
   // macOS can use the system default input; DirectShow on Windows has no default, so a name is required.
   const micDevice = platform === "darwin" ? str(env, "JARVIS_MIC") ?? "default" : need("JARVIS_MIC");
   const home = (platform === "win32" ? str(env, "USERPROFILE") : str(env, "HOME")) ?? homedir();

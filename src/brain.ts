@@ -1,7 +1,9 @@
 import { debugLog, timing } from "./debug.js";
 
 /**
- * Luna: the voice of the assistant (Azure OpenAI chat completions, streamed).
+ * Luna: the voice of the assistant (Azure OpenAI, streamed). Chat completions when she answers
+ * without reasoning (fastest first word); the Responses API when a reasoning effort is set, since
+ * chat completions reject function tools together with reasoning for this model family.
  * Luna only talks. Real work is handed to Claude Code workers through start_task,
  * and results come back as notes that Luna reports by voice.
  */
@@ -111,7 +113,7 @@ export interface BrainHooks {
   onToolStart?(name: string): void;
 }
 
-interface ChatMessage {
+export interface ChatMessage {
   role: "system" | "user" | "assistant" | "tool";
   content?: string | null;
   tool_calls?: { id: string; type: "function"; function: { name: string; arguments: string } }[];
@@ -167,7 +169,7 @@ export interface BrainOptions {
   deployment: string;
   apiVersion: string;
   /** "none" keeps the first word fast; higher values make Luna think before she answers. */
-  reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high";
+  reasoningEffort?: ReasoningEffort;
   /** Extra system text added each turn (long-term memory). */
   context: () => string;
   runTool: (name: string, args: Record<string, unknown>) => Promise<string> | string;
@@ -185,10 +187,78 @@ export interface BrainLimits {
   maxHistory: number;
   /** Requests with the same key and the same prompt prefix share Azure's prompt cache. */
   cacheKey: string;
+  /** Overrides BrainOptions.reasoningEffort for these turns (a practice session thinks harder). */
+  reasoningEffort?: ReasoningEffort;
+}
+
+export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high";
+
+/** Chat history as Responses API input items: tool calls and results become function_call items. */
+export function toResponsesInput(history: ChatMessage[]): unknown[] {
+  const items: unknown[] = [];
+  for (const m of history) {
+    if (m.role === "tool") {
+      items.push({ type: "function_call_output", call_id: m.tool_call_id, output: m.content ?? "" });
+      continue;
+    }
+    if (m.content) items.push({ role: m.role, content: m.content });
+    for (const c of m.tool_calls ?? []) {
+      items.push({ type: "function_call", call_id: c.id, name: c.function.name, arguments: c.function.arguments });
+    }
+  }
+  return items;
+}
+
+/** LUNA_TOOLS in the Responses API's flat function format. */
+export const RESPONSES_TOOLS = LUNA_TOOLS.map((t) => ({ type: "function" as const, ...t.function }));
+
+/** State of one streamed Responses API step, fed one event at a time. */
+export interface ResponsesStep {
+  text: string;
+  calls: Map<string, ToolCallAcc>;
+  done: boolean;
+}
+
+/**
+ * Apply one Responses API stream event. Returns text to speak now, if any.
+ * Throws on a failed response, so the caller hears an error instead of silence.
+ */
+export function applyResponsesEvent(step: ResponsesStep, ev: any): string {
+  switch (ev?.type) {
+    case "response.output_text.delta":
+      step.text += ev.delta ?? "";
+      return ev.delta ?? "";
+    case "response.output_item.added":
+    case "response.output_item.done":
+      if (ev.item?.type === "function_call") {
+        const acc = step.calls.get(ev.item.id) ?? { id: "", name: "", arguments: "" };
+        acc.id = ev.item.call_id ?? acc.id;
+        acc.name = ev.item.name ?? acc.name;
+        if (ev.type === "response.output_item.done" && typeof ev.item.arguments === "string") acc.arguments = ev.item.arguments;
+        step.calls.set(ev.item.id, acc);
+      }
+      return "";
+    case "response.function_call_arguments.delta": {
+      const acc = step.calls.get(ev.item_id);
+      if (acc) acc.arguments += ev.delta ?? "";
+      return "";
+    }
+    case "response.completed":
+    case "response.incomplete":
+      step.done = true;
+      return "";
+    case "response.failed":
+    case "error": {
+      const e = ev.response?.error ?? ev.error ?? ev;
+      throw new Error(`Azure OpenAI response failed: ${e?.code ?? ""} ${e?.message ?? ""}`.trim());
+    }
+    default:
+      return "";
+  }
 }
 
 /** Tokens added to the answer budget for thinking at each effort level. */
-export function reasoningHeadroom(effort: NonNullable<BrainOptions["reasoningEffort"]>): number {
+export function reasoningHeadroom(effort: ReasoningEffort): number {
   return { none: 0, minimal: 1000, low: 2000, medium: 4000, high: 8000 }[effort];
 }
 
@@ -197,10 +267,12 @@ const DEFAULT_LIMITS: BrainLimits = { maxTokens: MAX_TOKENS, maxHistory: MAX_HIS
 export class Brain {
   private history: ChatMessage[] = [];
   private readonly url: string;
+  private readonly responsesUrl: string;
 
   constructor(private readonly opts: BrainOptions) {
     const base = opts.endpoint.endsWith("/") ? opts.endpoint : opts.endpoint + "/";
     this.url = `${base}openai/deployments/${encodeURIComponent(opts.deployment)}/chat/completions?api-version=${opts.apiVersion}`;
+    this.responsesUrl = `${base}openai/v1/responses`;
   }
 
   /** Add context that Tor Martin did not say himself (task results, interruptions). */
@@ -258,8 +330,65 @@ export class Brain {
   }
 
   private async streamStep(system: string, hooks: BrainHooks, signal?: AbortSignal) {
-    const started = Date.now();
     const limits = this.opts.limits?.() ?? DEFAULT_LIMITS;
+    const effort = limits.reasoningEffort ?? this.opts.reasoningEffort ?? "none";
+    return effort === "none" ? this.streamChat(system, limits, hooks, signal) : this.streamResponses(system, limits, effort, hooks, signal);
+  }
+
+  /** One step on the Responses API, with reasoning. Same result shape as streamChat. */
+  private async streamResponses(system: string, limits: BrainLimits, effort: ReasoningEffort, hooks: BrainHooks, signal?: AbortSignal) {
+    const started = Date.now();
+    const res = await fetchRetryingConnection(this.responsesUrl, {
+      method: "POST",
+      headers: { "api-key": this.opts.apiKey, "content-type": "application/json" },
+      body: JSON.stringify({
+        model: this.opts.deployment,
+        instructions: system,
+        input: toResponsesInput(this.history),
+        tools: RESPONSES_TOOLS,
+        stream: true,
+        store: false,
+        reasoning: { effort },
+        // Reasoning tokens count against max_output_tokens, so thinking gets its own headroom.
+        max_output_tokens: limits.maxTokens + reasoningHeadroom(effort),
+        prompt_cache_key: limits.cacheKey,
+      }),
+      signal,
+    });
+    if (!res.ok || !res.body) {
+      const detail = (await res.text().catch(() => "")).slice(0, 200);
+      throw new Error(`Azure OpenAI ${res.status}: ${detail}`);
+    }
+    const step: ResponsesStep = { text: "", calls: new Map(), done: false };
+    let first = true;
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let pending = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      pending += decoder.decode(value, { stream: true });
+      let nl: number;
+      while ((nl = pending.indexOf("\n")) >= 0) {
+        const line = pending.slice(0, nl);
+        pending = pending.slice(nl + 1);
+        const ev = parseSseLine(line);
+        if (!ev) continue;
+        const say = applyResponsesEvent(step, ev);
+        if (first && (say || step.calls.size)) {
+          timing(`LLM_TTFT: ${Date.now() - started}ms (reasoning ${effort})`);
+          first = false;
+        }
+        if (say) hooks.onText(say);
+      }
+    }
+    const toolCalls = [...step.calls.values()].filter((c) => c.name);
+    return { text: step.text, finish: toolCalls.length ? "tool_calls" : "stop", toolCalls };
+  }
+
+  /** One step on chat completions, without reasoning: the fastest first word. */
+  private async streamChat(system: string, limits: BrainLimits, hooks: BrainHooks, signal?: AbortSignal) {
+    const started = Date.now();
     const res = await fetchRetryingConnection(this.url, {
       method: "POST",
       headers: { "api-key": this.opts.apiKey, "content-type": "application/json" },
@@ -267,10 +396,9 @@ export class Brain {
         messages: [{ role: "system", content: system }, ...this.history],
         tools: LUNA_TOOLS,
         stream: true,
-        // Reasoning tokens count against max_completion_tokens, so thinking gets its own headroom.
-        max_completion_tokens: limits.maxTokens + reasoningHeadroom(this.opts.reasoningEffort ?? "none"),
-        // "none" by default: voice needs the first word fast. JARVIS_REASONING_EFFORT raises it.
-        reasoning_effort: this.opts.reasoningEffort ?? "none",
+        max_completion_tokens: limits.maxTokens,
+        // Chat completions reject function tools with reasoning for this model family; see streamResponses.
+        reasoning_effort: "none",
         prompt_cache_key: limits.cacheKey,
       }),
       signal,

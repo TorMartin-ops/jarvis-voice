@@ -12,7 +12,7 @@ const { parseWorkerEvent, WORKER_DISALLOWED, statusLine, questionIn } = await im
 const { Memory } = await import("../dist/memory.js");
 const { runLunaTool, finishNote, isConfirmation, confirmationGate, afterTools, taskBoard, updateNote } = await import("../dist/luna-tools.js");
 const { StudyPacks, studyInstructions, splitFrontMatter } = await import("../dist/study.js");
-const { parseSseLine, reasoningHeadroom } = await import("../dist/brain.js");
+const { parseSseLine, reasoningHeadroom, toResponsesInput, applyResponsesEvent, RESPONSES_TOOLS, LUNA_TOOLS } = await import("../dist/brain.js");
 const { loadConfig, loadDotEnv, ConfigError } = await import("../dist/config.js");
 const { micInputArgs, listDeviceArgs, parseDeviceList, ffmpegBinary } = await import("../dist/mic.js");
 
@@ -141,6 +141,37 @@ t("SSE: data lines parse, control lines are ignored", () => {
   assert.deepEqual(parseSseLine('data: {"a":1}'), { a: 1 });
 });
 
+t("brain: chat history becomes Responses input, with tool calls and results as function_call items", () => {
+  const items = toResponsesInput([
+    { role: "user", content: "tell filene" },
+    { role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "list_tasks", arguments: "{}" } }] },
+    { role: "tool", tool_call_id: "c1", content: "t1 kjører" },
+    { role: "assistant", content: "Én oppgave kjører." },
+  ]);
+  assert.deepEqual(items, [
+    { role: "user", content: "tell filene" },
+    { type: "function_call", call_id: "c1", name: "list_tasks", arguments: "{}" },
+    { type: "function_call_output", call_id: "c1", output: "t1 kjører" },
+    { role: "assistant", content: "Én oppgave kjører." },
+  ]);
+  assert.equal(RESPONSES_TOOLS.length, LUNA_TOOLS.length);
+  assert.ok(RESPONSES_TOOLS.every((t) => t.type === "function" && t.name && t.parameters), "flat function tools, as the Responses API wants");
+});
+t("brain: Responses stream events give spoken text and complete tool calls; a failure throws", () => {
+  const step = { text: "", calls: new Map(), done: false };
+  assert.equal(applyResponsesEvent(step, { type: "response.reasoning_summary_text.delta", delta: "tenker" }), "", "reasoning is never spoken");
+  assert.equal(applyResponsesEvent(step, { type: "response.output_text.delta", delta: "Det må " }), "Det må ");
+  applyResponsesEvent(step, { type: "response.output_text.delta", delta: "jeg sjekke." });
+  applyResponsesEvent(step, { type: "response.output_item.added", item: { type: "function_call", id: "fc1", call_id: "c1", name: "stop_study", arguments: "" } });
+  applyResponsesEvent(step, { type: "response.function_call_arguments.delta", item_id: "fc1", delta: "{" });
+  applyResponsesEvent(step, { type: "response.function_call_arguments.delta", item_id: "fc1", delta: "}" });
+  applyResponsesEvent(step, { type: "response.completed", response: {} });
+  assert.equal(step.text, "Det må jeg sjekke.");
+  assert.deepEqual([...step.calls.values()], [{ id: "c1", name: "stop_study", arguments: "{}" }]);
+  assert.ok(step.done);
+  assert.throws(() => applyResponsesEvent(step, { type: "response.failed", response: { error: { code: "server_error", message: "boom" } } }), /server_error boom/);
+});
+
 // ---- config -------------------------------------------------------------------
 t("config: missing required settings are listed", () => {
   assert.throws(() => loadConfig({}, "win32"), (e) => e instanceof ConfigError && /ELEVENLABS_API_KEY/.test(e.message) && /JARVIS_MIC/.test(e.message));
@@ -170,6 +201,8 @@ t("config: Luna's reasoning effort and the TTS language are opt-in", () => {
   assert.equal(plain.ttsLanguage, undefined, "no language_code by default: eleven_v4_turbo rejects it");
   const tuned = loadConfig({ ...base, JARVIS_REASONING_EFFORT: "medium", ELEVENLABS_TTS_LANGUAGE: "no" });
   assert.equal(tuned.azure.reasoningEffort, "medium");
+  assert.equal(plain.azure.studyReasoningEffort, "medium", "practice sessions think by default, so a role does not invent facts");
+  assert.equal(loadConfig({ ...base, JARVIS_STUDY_REASONING_EFFORT: "none" }).azure.studyReasoningEffort, "none");
   assert.equal(tuned.ttsLanguage, "no");
   assert.throws(() => loadConfig({ ...base, JARVIS_REASONING_EFFORT: "middels" }), (e) => e instanceof ConfigError && /JARVIS_REASONING_EFFORT/.test(e.message));
   assert.equal(reasoningHeadroom("none"), 0, "no thinking, no extra tokens");

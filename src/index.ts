@@ -115,7 +115,7 @@ export async function createAssistant(
     runTool: (name, args) =>
       runLunaTool({ tasks, memory, study: studyControl, lastUserText: () => lastUserText, previousReply: () => previousReply, log: logFn }, name, args),
     afterTools,
-    limits: () => (study ? { maxTokens: 1200, maxHistory: 80, cacheKey: `jarvis-study-${study.name}` } : { maxTokens: 500, maxHistory: 40, cacheKey: "jarvis-luna" }),
+    limits: () => (study ? { maxTokens: 1200, maxHistory: 80, cacheKey: `jarvis-study-${study.name}`, reasoningEffort: cfg.azure.studyReasoningEffort } : { maxTokens: 500, maxHistory: 40, cacheKey: "jarvis-luna" }),
   });
 
   conversation = new Conversation({
@@ -144,7 +144,7 @@ export async function createAssistant(
 async function main(): Promise<void> {
   process.env.VOICE_DEBUG ??= "1";
   // Personal overrides in the data folder (model, voice) win over the repository's .env.
-  loadDotEnv(join(process.env.JARVIS_DATA_DIR || join(homedir(), ".jarvis"), "jarvis.env"));
+  loadDotEnv(join(process.env.JARVIS_DATA_DIR || join(homedir(), ".jarvis"), "settings.conf"));
   loadDotEnv(join(process.cwd(), ".env"));
 
   if (process.argv.includes("--devices")) {

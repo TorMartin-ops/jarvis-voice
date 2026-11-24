@@ -11,7 +11,7 @@ const { isInside, redact } = await import("../dist/policy.js");
 const { parseWorkerEvent, WORKER_DISALLOWED, statusLine, questionIn } = await import("../dist/tasks.js");
 const { Memory } = await import("../dist/memory.js");
 const { runLunaTool, finishNote, isConfirmation, confirmationGate, afterTools, taskBoard, updateNote } = await import("../dist/luna-tools.js");
-const { StudyPacks, studyInstructions } = await import("../dist/study.js");
+const { StudyPacks, studyInstructions, splitFrontMatter } = await import("../dist/study.js");
 const { parseSseLine } = await import("../dist/brain.js");
 const { loadConfig, loadDotEnv, ConfigError } = await import("../dist/config.js");
 const { micInputArgs, listDeviceArgs, parseDeviceList, ffmpegBinary } = await import("../dist/mic.js");
@@ -349,6 +349,25 @@ t("study packs: found by course code however it is written, and private voice ru
   assert.ok(text.indexOf("ØVINGSMODUS") < text.indexOf("Dagmulkt NS 8405"), "voice rules before the material");
   assert.match(text, /NS 8405, NLM 19/);
   assert.equal(new StudyPacks(join(dir, "missing")).list().length, 0);
+});
+t("study packs: «modus: rollespill» makes Jarvis play the role, with feedback only at the end", () => {
+  const dir = mkdtempSync(join(tmpdir(), "jv-role-"));
+  writeFileSync(join(dir, "yassin-mote.md"), "---\nmodus: rollespill\n---\n# Salgsmøte med Yassin\n\nDu er Yassin, økonomisjef.");
+  writeFileSync(join(dir, "ing400.md"), "# ING400\n\nNS 8405.");
+  const packs = new StudyPacks(dir);
+  assert.deepEqual(packs.list().find((p) => p.name === "yassin-mote"), { name: "yassin-mote", title: "Salgsmøte med Yassin" });
+  const role = packs.find("yassin");
+  assert.equal(role?.mode, "rollespill");
+  assert.ok(!role.text.includes("modus:"), "the front matter is not part of the material");
+  const text = studyInstructions(role);
+  assert.match(text, /^ROLLESPILL: Salgsmøte med Yassin/);
+  assert.ok(text.indexOf("Bli i rollen") < text.indexOf("Du er Yassin"), "role rules before the material");
+  assert.match(text, /avslutt øvingen/);
+  assert.doesNotMatch(text, /Karakterestimat/, "no exam grading in a role-play");
+  assert.equal(packs.find("ing400")?.mode, "eksamen");
+  assert.match(studyInstructions(packs.find("ing400")), /^ØVINGSMODUS/);
+  assert.equal(splitFrontMatter("---\r\nmodus: rollespill\r\n---\r\nTekst").mode, "rollespill");
+  assert.deepEqual(splitFrontMatter("Ingen front matter"), { mode: "eksamen", body: "Ingen front matter" });
 });
 
 t("speech: standard numbers are read in pairs the Norwegian way, in code", () => {
